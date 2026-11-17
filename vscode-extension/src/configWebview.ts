@@ -474,8 +474,9 @@ function getWebviewContent(config: ProxyConfig): string {
             <div class="form-input-group">
                 <select id="type">
                     <option value="socks5" ${config.type === 'socks5' ? 'selected' : ''}>SOCKS5</option>
-                    <option value="http" ${config.type === 'http' ? 'selected' : ''}>HTTP</option>
+                    ${config.type === 'http' ? '<option value="http" selected disabled>HTTP（不受支持）</option>' : ''}
                 </select>
+                <div id="status-proxy_socks5" class="validation-status"></div>
             </div>
         </div>
 

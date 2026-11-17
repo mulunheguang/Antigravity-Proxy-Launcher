@@ -4,7 +4,6 @@ LDFLAGS = -dynamiclib -ldl -lpthread
 
 TARGET     = bin/libantigravity.dylib
 RELAY      = bin/antigravity-relay
-SIGN_STAMP = bin/.sign_stamp
 SRC        = src/libantigravity.c
 CONFIG     = $(shell pwd)/config.yaml
 
@@ -29,25 +28,25 @@ PROXY_TYPE := $(shell grep -A5 'proxy:' "$(CONFIG)" | grep 'type:' | head -1 | a
 ALL_PROXY_VAL := $(PROXY_TYPE)://$(PROXY_HOST):$(PROXY_PORT)
 
 # ── 自动定位 Antigravity ──────────────────────────────────────────────
-ANTIGRAVITY_APP ?= $(or \
-	$(shell [ -f "/Applications/Antigravity.app/Contents/MacOS/Electron" ] && echo "/Applications/Antigravity.app/Contents/MacOS/Electron"), \
-	$(shell [ -f "$(HOME)/Applications/Antigravity.app/Contents/MacOS/Electron" ] && echo "$(HOME)/Applications/Antigravity.app/Contents/MacOS/Electron"))
-
-ANTIGRAVITY_BUNDLE := $(patsubst %/Contents/MacOS/Electron,%,$(ANTIGRAVITY_APP))
+APP_HELPER = /bin/bash vscode-extension/scripts/antigravity-proxy-helper.sh
+shell_quote = '$(subst ','"'"',$(1))'
+# ANTIGRAVITY_APP 可指定 .app 或包内的旧式可执行文件路径。
+ANTIGRAVITY_APP ?=
+ANTIGRAVITY_EXECUTABLE := $(shell \
+	bundle=$(call shell_quote,$(ANTIGRAVITY_APP)); \
+	if [ -n "$$bundle" ]; then \
+		bundle=$${bundle%/}; \
+		$(APP_HELPER) resolve-executable "$${bundle%/Contents/MacOS/*}"; \
+	else \
+		$(APP_HELPER) resolve-executable /Applications/Antigravity.app || \
+		$(APP_HELPER) resolve-executable $(call shell_quote,$(HOME)/Applications/Antigravity.app); \
+	fi)
+ANTIGRAVITY_BUNDLE := $(shell executable=$(call shell_quote,$(ANTIGRAVITY_EXECUTABLE)); printf '%s' "$${executable%/Contents/MacOS/*}")
 
 ENTITLEMENTS = /tmp/antigravity_inject_entitlements.plist
 
-# 所有需要重签名的可执行文件（Helper variants + AI Go binary）
-SIGN_TARGETS = \
-	"$(ANTIGRAVITY_APP)" \
-	"$(ANTIGRAVITY_BUNDLE)/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper" \
-	"$(ANTIGRAVITY_BUNDLE)/Contents/Frameworks/Antigravity Helper (GPU).app/Contents/MacOS/Antigravity Helper (GPU)" \
-	"$(ANTIGRAVITY_BUNDLE)/Contents/Frameworks/Antigravity Helper (Renderer).app/Contents/MacOS/Antigravity Helper (Renderer)" \
-	"$(ANTIGRAVITY_BUNDLE)/Contents/Frameworks/Antigravity Helper (Plugin).app/Contents/MacOS/Antigravity Helper (Plugin)" \
-	"$(ANTIGRAVITY_BUNDLE)/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm"
-
 # ────────────────────────────────────────────────────────────────────
-.PHONY: all build sign resign run kill clean help
+.PHONY: all build sign resign _do_sign check-app check-proxy run kill clean help
 
 ## 默认目标：编译 + 签名 + 注入启动
 all: run
@@ -70,20 +69,21 @@ $(RELAY): src/relay.c
 	@printf '\033[32m      ✓ 中继编译完成\033[0m\n'
 
 # ── 签名（检测到已有权限则跳过）─────────────────────────────────────
-$(SIGN_STAMP): $(TARGET)
-	@if [ -z "$(ANTIGRAVITY_APP)" ]; then \
+check-app:
+	@if [ -z $(call shell_quote,$(ANTIGRAVITY_EXECUTABLE)) ]; then \
 		printf '\033[31m[错误] 未找到 Antigravity\033[0m\n'; exit 1; \
 	fi
-	@LS_BIN="$(ANTIGRAVITY_BUNDLE)/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm"; \
-	if codesign -d --entitlements - "$$LS_BIN" 2>/dev/null \
-		| grep -q "allow-dyld-environment-variables"; then \
-		printf '\033[90m[2/4] 所有签名权限已存在，跳过重签\033[0m\n'; \
-		touch $@; \
+
+sign: $(TARGET) check-app
+	@ENT=$$(codesign -d --entitlements - $(call shell_quote,$(ANTIGRAVITY_EXECUTABLE)) 2>/dev/null); \
+	if printf '%s' "$$ENT" | grep -q 'allow-dyld-environment-variables' && \
+	   printf '%s' "$$ENT" | grep -q 'disable-library-validation'; then \
+		printf '\033[90m[2/4] 主程序已具备注入签名权限，跳过重签\033[0m\n'; \
 	else \
 		$(MAKE) _do_sign; \
 	fi
 
-_do_sign:
+_do_sign: check-app check-proxy
 	@printf '\033[34m[2/4] 写入 LSEnvironment 并重签名（需要 sudo 密码）...\033[0m\n'
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n\
@@ -96,7 +96,7 @@ _do_sign:
   <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>\n\
   <key>com.apple.security.cs.disable-library-validation</key><true/>\n\
 </dict></plist>\n' > $(ENTITLEMENTS)
-	@BUNDLE="$(ANTIGRAVITY_BUNDLE)"; \
+	@BUNDLE=$(call shell_quote,$(ANTIGRAVITY_BUNDLE)); \
 	DYLIB="$(shell pwd)/$(TARGET)"; \
 	CFG="$(CONFIG)"; \
 	PROXY="$(ALL_PROXY_VAL)"; \
@@ -112,7 +112,7 @@ _do_sign:
 	  -c "Add :LSEnvironment:ANTIGRAVITY_CONFIG string $$CFG" \
 	  "$$PLIST" || { printf '\033[31m      ✗ LSEnvironment 写入失败\033[0m\n'; exit 1; }; \
 	printf '\033[32m      ✓ LSEnvironment 写入完成\033[0m\n'
-	@BUNDLE="$(ANTIGRAVITY_BUNDLE)"; \
+	@BUNDLE=$(call shell_quote,$(ANTIGRAVITY_BUNDLE)); \
 	sign_one() { \
 		if [ -f "$$1" ]; then \
 			printf '\033[90m      签名: %s\033[0m\n' "$$1"; \
@@ -120,31 +120,28 @@ _do_sign:
 				printf '\033[31m      ✗ 签名失败: %s\033[0m\n' "$$1"; exit 1; }; \
 		fi; \
 	}; \
-	sign_one "$$BUNDLE/Contents/MacOS/Electron"; \
 	sign_one "$$BUNDLE/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper"; \
 	sign_one "$$BUNDLE/Contents/Frameworks/Antigravity Helper (GPU).app/Contents/MacOS/Antigravity Helper (GPU)"; \
 	sign_one "$$BUNDLE/Contents/Frameworks/Antigravity Helper (Renderer).app/Contents/MacOS/Antigravity Helper (Renderer)"; \
 	sign_one "$$BUNDLE/Contents/Frameworks/Antigravity Helper (Plugin).app/Contents/MacOS/Antigravity Helper (Plugin)"; \
-	sign_one "$$BUNDLE/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm"
+	sign_one "$$BUNDLE/Contents/Resources/bin/language_server"; \
+	for f in "$$BUNDLE"/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_*; do \
+		sign_one "$$f"; \
+	done; \
+	sign_one $(call shell_quote,$(ANTIGRAVITY_EXECUTABLE))
 	@printf '\033[32m      ✓ 全部签名完成\033[0m\n'
-	@mkdir -p bin && touch $(SIGN_STAMP)
-
-sign: $(SIGN_STAMP)
 
 ## 强制重新签名（Antigravity 更新后使用）
-resign:
-	@rm -f $(SIGN_STAMP)
-	@$(MAKE) _do_sign
+resign: _do_sign
 
 # ── 关闭已运行的 Antigravity ─────────────────────────────────────────
-kill:
-	@if pgrep -f "Antigravity.app" > /dev/null 2>&1 || pgrep -f "language_server_macos_arm" > /dev/null 2>&1; then \
+kill: check-app
+	@PATTERN=$$(printf '%s' $(call shell_quote,$(ANTIGRAVITY_BUNDLE)) | sed 's/[][().^$$*+?{}|\\]/\\&/g'); \
+	if pgrep -f "^$$PATTERN/Contents/" > /dev/null 2>&1; then \
 		printf '\033[33m[3/4] 正在关闭已运行的 Antigravity ...\033[0m\n'; \
-		pkill -f "Antigravity.app" 2>/dev/null || true; \
-		pkill -f "language_server_macos_arm" 2>/dev/null || true; \
+		pkill -f "^$$PATTERN/Contents/" 2>/dev/null || true; \
 		sleep 2; \
-		pkill -9 -f "Antigravity.app" 2>/dev/null || true; \
-		pkill -9 -f "language_server_macos_arm" 2>/dev/null || true; \
+		pkill -9 -f "^$$PATTERN/Contents/" 2>/dev/null || true; \
 		sleep 1; \
 		printf '\033[32m      ✓ 已关闭\033[0m\n'; \
 	else \
@@ -160,7 +157,14 @@ kill:
 #   3. language_server 连接 127.0.0.1:443 → 中继读 TLS SNI → SOCKS5 → 10808
 #   4. 关闭 Antigravity 后保留 hosts/中继（曾误用 EXIT trap 会在退出 app 时清掉，已改为 exec + 仅 INT/TERM）
 #
-run: $(TARGET) $(RELAY) $(SIGN_STAMP) kill
+check-proxy:
+	@if [ "$(PROXY_TYPE)" != socks5 ]; then \
+		printf '请在 config.yaml 中配置无认证 SOCKS5 上游（type: socks5）。\n' >&2; exit 1; \
+	fi
+
+run: check-proxy $(TARGET) $(RELAY)
+	@$(MAKE) sign
+	@$(MAKE) kill
 	@printf '\033[34m[4/4] 注入启动 Antigravity ...\033[0m\n'
 	@printf '\033[90m      代理: %s\033[0m\n' "$(ALL_PROXY_VAL)"
 	@printf '\033[90m      DYLD: %s\033[0m\n' "$(shell pwd)/$(TARGET)"
@@ -174,7 +178,7 @@ run: $(TARGET) $(RELAY) $(SIGN_STAMP) kill
 	DYLIB="$(shell pwd)/$(TARGET)"; \
 	CONFIG="$(CONFIG)"; \
 	ALL_PROXY="$(ALL_PROXY_VAL)"; \
-	ANTIGRAVITY="$(ANTIGRAVITY_APP)"; \
+	ANTIGRAVITY=$(call shell_quote,$(ANTIGRAVITY_EXECUTABLE)); \
 	DOMAINS="$(RELAY_DOMAINS)"; \
 	\
 	cleanup() { \
@@ -233,9 +237,9 @@ help:
 	@printf '  make kill     关闭当前运行的 Antigravity\n'
 	@printf '  make clean    删除编译产物\n'
 	@printf '\n\033[1m检测到的路径：\033[0m\n'
-	@printf '  Antigravity: %s\n' "$(ANTIGRAVITY_APP)"
+	@printf '  Antigravity: %s\n' $(call shell_quote,$(ANTIGRAVITY_EXECUTABLE))
 	@printf '  代理:        %s\n' "$(ALL_PROXY_VAL)"
 	@printf '\n\033[1m透明代理说明：\033[0m\n'
 	@printf '  make run 先写 /etc/hosts（Go DNS 先读此文件），再 sudo 启动 SNI 中继 :443\n'
-	@printf '  googleapis 流量: 127.0.0.1:443 → 中继读 TLS SNI → SOCKS5:10808\n'
+	@printf '  googleapis 流量: 127.0.0.1:443 → 中继读 TLS SNI → %s\n' "$(ALL_PROXY_VAL)"
 	@printf '  正常退出 Antigravity 不会清 hosts；若在终端按 Ctrl+C 中断流程会触发清理\n'

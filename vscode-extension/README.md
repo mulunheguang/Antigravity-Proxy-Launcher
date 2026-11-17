@@ -38,7 +38,7 @@ Open-source project (issues & updates): [github.com/raybz/Antigravity-Proxy](htt
 
 ### Quick start
 
-**1. Install** — `Cmd+Shift+P` → **Extensions: Install from VSIX...** → choose `antigravity-proxy-*.vsix`.
+**1. Install** — In VS Code or Cursor, press `Cmd+Shift+P` → **Extensions: Install from VSIX...** → choose `antigravity-proxy-*.vsix`.
 
 **2. Configure** — Command palette → **Antigravity Proxy: ⚙️ 打开配置页面** → set proxy (and optional app path) → **Validate** → **Save**. Use **Diagnostics** (collapsible) on that page.
 
@@ -46,8 +46,8 @@ Open-source project (issues & updates): [github.com/raybz/Antigravity-Proxy](htt
 |-----|---------|------|
 | Host | `127.0.0.1` | |
 | Port | `10808` | Clash often `7890` |
-| Type | `socks5` | or `http` |
-| App path | auto | Empty searches `/Applications` |
+| Type | `socks5` | No authentication |
+| App path | auto | Empty searches `/Applications` and `~/Applications` |
 
 **3. Launch** — **Antigravity Proxy: 🚀 启动代理**. Without the helper you’ll type `sudo` in the terminal; with the helper, privileged steps can run in a **hidden** terminal.
 
@@ -91,7 +91,7 @@ Open-source project (issues & updates): [github.com/raybz/Antigravity-Proxy](htt
 
 ### Requirements
 
-macOS · Xcode Command Line Tools · local SOCKS5/HTTP proxy · Antigravity installed.
+macOS · Xcode Command Line Tools · local SOCKS5 proxy without authentication · Antigravity installed.
 
 <p align="center"><a href="#readme-lang-zh"><b>→ 简体中文</b></a></p>
 
@@ -124,7 +124,7 @@ Antigravity 的 language server 使用 Go 原生 DNS，**不会遵循系统代�
 
 ### 快速开始
 
-**1. 安装** — `Cmd+Shift+P` → **Extensions: Install from VSIX...** → 选择 `antigravity-proxy-*.vsix`。
+**1. 安装** — 在 VS Code 或 Cursor 中按 `Cmd+Shift+P` → **Extensions: Install from VSIX...** → 选择 `antigravity-proxy-*.vsix`。
 
 **2. 配置** — 命令面板 → **Antigravity Proxy: ⚙️ 打开配置页面** → 填写代理与（可选）App 路径 → **校验配置** → **保存配置**。在「环境与流程」可 **检测** 诊断，并用 **收起/展开** 控制长列表。
 
@@ -132,8 +132,8 @@ Antigravity 的 language server 使用 Go 原生 DNS，**不会遵循系统代�
 |------|------|------|
 | 代理地址 | `127.0.0.1` | |
 | 端口 | `10808` | Clash 常见 7890 |
-| 类型 | `socks5` | 或 `http` |
-| App 路径 | 自动检测 | 留空搜 `/Applications` |
+| 类型 | `socks5` | 无认证 |
+| App 路径 | 自动检测 | 留空搜索 `/Applications` 和 `~/Applications` |
 
 **3. 启动** — **Antigravity Proxy: 🚀 启动代理**。未装免密 helper 时需在终端输入 `sudo`；装好后多为**后台终端**，少打扰。
 
@@ -177,7 +177,7 @@ Antigravity 的 language server 使用 Go 原生 DNS，**不会遵循系统代�
 
 ### 系统要求
 
-macOS · Xcode Command Line Tools · 本地 SOCKS5/HTTP 代理 · 已安装 Antigravity。
+macOS · Xcode Command Line Tools · 本地无认证 SOCKS5 代理 · 已安装 Antigravity。
 
 <p align="center"><a href="#readme-lang-en"><b>→ English</b></a></p>
 

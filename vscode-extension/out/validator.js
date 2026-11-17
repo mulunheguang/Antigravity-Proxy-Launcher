@@ -33,17 +33,20 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SOCKS5_REQUIRED = void 0;
 exports.validateProxyConnection = validateProxyConnection;
 exports.validateSocks5Handshake = validateSocks5Handshake;
+exports.validateUpstreamProtocol = validateUpstreamProtocol;
 exports.validatePort = validatePort;
 exports.validateHost = validateHost;
 exports.detectAntigravityPath = detectAntigravityPath;
 exports.validateAntigravityPath = validateAntigravityPath;
 exports.validateAll = validateAll;
 const net = __importStar(require("net"));
-const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const antigravityApp_1 = require("./antigravityApp");
 const logger_1 = require("./logger");
+exports.SOCKS5_REQUIRED = '注入库与 SNI 中继需要无认证 SOCKS5。请填写本地 SOCKS5 监听端口，并将类型设为 SOCKS5。';
 /**
  * 校验代理连通性：尝试 TCP 连接 host:port
  */
@@ -77,18 +80,8 @@ async function validateSocks5Handshake(host, port, timeoutMs = 3000) {
     return new Promise((resolve) => {
         const socket = new net.Socket();
         const timeout = Math.min(Math.max(timeoutMs, 500), 60000);
-        let settled = false;
         const finish = (valid, message) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            try {
-                socket.destroy();
-            }
-            catch {
-                /* ignore */
-            }
+            socket.destroy();
             resolve({ field: 'proxy_socks5', valid, message });
         };
         socket.setTimeout(timeout);
@@ -103,18 +96,38 @@ async function validateSocks5Handshake(host, port, timeoutMs = 3000) {
             (0, logger_1.logError)(`SOCKS5 握手失败: ${err.message}`);
             finish(false, `❌ SOCKS5 握手失败: ${err.message}`);
         });
-        socket.once('data', (data) => {
-            if (data.length >= 2 && data[0] === 0x05 && data[1] === 0x00) {
+        socket.once('end', () => finish(false, '❌ 代理在 SOCKS5 协商完成前关闭了连接'));
+        let response = Buffer.alloc(0);
+        socket.on('data', (data) => {
+            response = Buffer.concat([response, data.subarray(0, 2 - response.length)]);
+            if (response.length < 2) {
+                return;
+            }
+            if (response[0] === 0x05 && response[1] === 0x00) {
                 (0, logger_1.logSuccess)(`SOCKS5 握手成功: ${host}:${port}`);
-                finish(true, `✅ SOCKS5 无认证协商成功`);
+                finish(true, '✅ SOCKS5 无认证协商成功（握手检测）');
             }
             else {
-                const preview = data.slice(0, 8).toString('hex');
+                const preview = response.toString('hex');
                 finish(false, `❌ 非法 SOCKS5 应答: ${preview}`);
             }
         });
         socket.connect(port, host);
     });
+}
+async function validateUpstreamProtocol(config) {
+    if (config.type !== 'socks5') {
+        return { field: 'proxy_socks5', valid: false, message: `❌ ${exports.SOCKS5_REQUIRED}` };
+    }
+    const address = validateHost(config.host);
+    if (!address.valid) {
+        return address;
+    }
+    const port = validatePort(config.port);
+    if (!port.valid) {
+        return port;
+    }
+    return validateSocks5Handshake(config.host, config.port, config.timeout || 5000);
 }
 /**
  * 校验端口合法性
@@ -152,21 +165,14 @@ function validateHost(host) {
     return { field: 'host', valid: false, message: '❌ 地址格式不正确' };
 }
 /**
- * 校验项目目录（需要包含 Makefile 和 src/）
- */
-/**
  * 自动检测 Antigravity.app 路径
  */
 function detectAntigravityPath() {
-    const candidates = [
-        '/Applications/Antigravity.app',
-        `${process.env.HOME}/Applications/Antigravity.app`,
-    ];
-    for (const p of candidates) {
-        if (fs.existsSync(p)) {
-            (0, logger_1.log)(`自动检测到 Antigravity: ${p}`);
-            return p;
-        }
+    const executable = (0, antigravityApp_1.resolveAntigravityExecutable)('');
+    if (executable) {
+        const bundle = path.resolve(executable, '../../..');
+        (0, logger_1.log)(`自动检测到 Antigravity: ${bundle}`);
+        return bundle;
     }
     return null;
 }
@@ -174,33 +180,26 @@ function detectAntigravityPath() {
  * 校验 Antigravity.app 路径
  */
 function validateAntigravityPath(appPath) {
-    if (!appPath || appPath.trim().length === 0) {
-        const detected = detectAntigravityPath();
-        if (detected) {
-            return { field: 'antigravityAppPath', valid: true, message: `✅ 自动检测到: ${detected}` };
-        }
-        return { field: 'antigravityAppPath', valid: false, message: '❌ 未找到 Antigravity.app，请手动指定路径' };
-    }
-    if (!fs.existsSync(appPath)) {
-        return { field: 'antigravityAppPath', valid: false, message: `❌ 路径不存在: ${appPath}` };
-    }
-    const electron = path.join(appPath, 'Contents', 'MacOS', 'Electron');
-    if (!fs.existsSync(electron)) {
-        return { field: 'antigravityAppPath', valid: false, message: '❌ 该路径不是有效的 Antigravity.app' };
-    }
-    return { field: 'antigravityAppPath', valid: true, message: '✅ Antigravity.app 路径有效' };
+    const executable = (0, antigravityApp_1.resolveAntigravityExecutable)(appPath);
+    const message = executable
+        ? `✅ 主程序: ${executable}`
+        : appPath.trim()
+            ? '❌ 该路径不是有效的 Antigravity.app（请检查 Info.plist 和主程序的执行权限）'
+            : '❌ 未找到 Antigravity.app，请手动指定路径';
+    return { field: 'antigravityAppPath', valid: Boolean(executable), message };
 }
 /**
  * 执行全量校验
  */
 async function validateAll(config) {
     const results = [];
-    results.push(validateHost(config.host));
-    results.push(validatePort(config.port));
+    const host = validateHost(config.host);
+    const port = validatePort(config.port);
+    results.push(host, port);
     results.push(validateAntigravityPath(config.antigravityAppPath));
-    // 代理连通性检测最后做（可能耗时）
-    const proxyResult = await validateProxyConnection(config.host, config.port);
-    results.push(proxyResult);
+    if (host.valid && port.valid) {
+        results.push(await validateUpstreamProtocol(config));
+    }
     return results;
 }
 //# sourceMappingURL=validator.js.map

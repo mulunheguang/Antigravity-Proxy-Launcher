@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** 打包前确认随扩展分发的 macOS 二进制已存在（由仓库根目录 make build 同步到 bin/） */
+/** 打包前确认随扩展分发的 macOS 二进制已放入扩展的 bin/。 */
 const fs = require('fs');
 const path = require('path');
 
@@ -23,7 +23,7 @@ for (const name of required) {
 }
 
 if (!ok) {
-    console.error('\n请在本仓库根目录执行: make build');
+    console.error('\n请在仓库根目录运行 make build，然后将 bin/ 中的两个二进制复制到 vscode-extension/bin/');
     process.exit(1);
 }
 

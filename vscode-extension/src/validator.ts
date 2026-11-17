@@ -1,6 +1,6 @@
 import * as net from 'net';
-import * as fs from 'fs';
 import * as path from 'path';
+import { resolveAntigravityExecutable } from './antigravityApp';
 import { log, logError, logSuccess } from './logger';
 import { ProxyConfig } from './configManager';
 
@@ -9,6 +9,8 @@ export interface ValidationResult {
     valid: boolean;
     message: string;
 }
+
+export const SOCKS5_REQUIRED = '注入库与 SNI 中继需要无认证 SOCKS5。请填写本地 SOCKS5 监听端口，并将类型设为 SOCKS5。';
 
 /**
  * 校验代理连通性：尝试 TCP 连接 host:port
@@ -57,18 +59,8 @@ export async function validateSocks5Handshake(
     return new Promise((resolve) => {
         const socket = new net.Socket();
         const timeout = Math.min(Math.max(timeoutMs, 500), 60000);
-        let settled = false;
-
         const finish = (valid: boolean, message: string) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            try {
-                socket.destroy();
-            } catch {
-                /* ignore */
-            }
+            socket.destroy();
             resolve({ field: 'proxy_socks5', valid, message });
         };
 
@@ -88,18 +80,40 @@ export async function validateSocks5Handshake(
             finish(false, `❌ SOCKS5 握手失败: ${err.message}`);
         });
 
-        socket.once('data', (data: Buffer) => {
-            if (data.length >= 2 && data[0] === 0x05 && data[1] === 0x00) {
+        socket.once('end', () => finish(false, '❌ 代理在 SOCKS5 协商完成前关闭了连接'));
+
+        let response = Buffer.alloc(0);
+        socket.on('data', (data: Buffer) => {
+            response = Buffer.concat([response, data.subarray(0, 2 - response.length)]);
+            if (response.length < 2) {
+                return;
+            }
+            if (response[0] === 0x05 && response[1] === 0x00) {
                 logSuccess(`SOCKS5 握手成功: ${host}:${port}`);
-                finish(true, `✅ SOCKS5 无认证协商成功`);
+                finish(true, '✅ SOCKS5 无认证协商成功（握手检测）');
             } else {
-                const preview = data.slice(0, 8).toString('hex');
+                const preview = response.toString('hex');
                 finish(false, `❌ 非法 SOCKS5 应答: ${preview}`);
             }
         });
 
         socket.connect(port, host);
     });
+}
+
+export async function validateUpstreamProtocol(config: ProxyConfig): Promise<ValidationResult> {
+    if (config.type !== 'socks5') {
+        return { field: 'proxy_socks5', valid: false, message: `❌ ${SOCKS5_REQUIRED}` };
+    }
+    const address = validateHost(config.host);
+    if (!address.valid) {
+        return address;
+    }
+    const port = validatePort(config.port);
+    if (!port.valid) {
+        return port;
+    }
+    return validateSocks5Handshake(config.host, config.port, config.timeout || 5000);
 }
 
 /**
@@ -144,23 +158,14 @@ export function validateHost(host: string): ValidationResult {
 }
 
 /**
- * 校验项目目录（需要包含 Makefile 和 src/）
- */
-
-
-/**
  * 自动检测 Antigravity.app 路径
  */
 export function detectAntigravityPath(): string | null {
-    const candidates = [
-        '/Applications/Antigravity.app',
-        `${process.env.HOME}/Applications/Antigravity.app`,
-    ];
-    for (const p of candidates) {
-        if (fs.existsSync(p)) {
-            log(`自动检测到 Antigravity: ${p}`);
-            return p;
-        }
+    const executable = resolveAntigravityExecutable('');
+    if (executable) {
+        const bundle = path.resolve(executable, '../../..');
+        log(`自动检测到 Antigravity: ${bundle}`);
+        return bundle;
     }
     return null;
 }
@@ -169,24 +174,13 @@ export function detectAntigravityPath(): string | null {
  * 校验 Antigravity.app 路径
  */
 export function validateAntigravityPath(appPath: string): ValidationResult {
-    if (!appPath || appPath.trim().length === 0) {
-        const detected = detectAntigravityPath();
-        if (detected) {
-            return { field: 'antigravityAppPath', valid: true, message: `✅ 自动检测到: ${detected}` };
-        }
-        return { field: 'antigravityAppPath', valid: false, message: '❌ 未找到 Antigravity.app，请手动指定路径' };
-    }
-
-    if (!fs.existsSync(appPath)) {
-        return { field: 'antigravityAppPath', valid: false, message: `❌ 路径不存在: ${appPath}` };
-    }
-
-    const electron = path.join(appPath, 'Contents', 'MacOS', 'Electron');
-    if (!fs.existsSync(electron)) {
-        return { field: 'antigravityAppPath', valid: false, message: '❌ 该路径不是有效的 Antigravity.app' };
-    }
-
-    return { field: 'antigravityAppPath', valid: true, message: '✅ Antigravity.app 路径有效' };
+    const executable = resolveAntigravityExecutable(appPath);
+    const message = executable
+        ? `✅ 主程序: ${executable}`
+        : appPath.trim()
+            ? '❌ 该路径不是有效的 Antigravity.app（请检查 Info.plist 和主程序的执行权限）'
+            : '❌ 未找到 Antigravity.app，请手动指定路径';
+    return { field: 'antigravityAppPath', valid: Boolean(executable), message };
 }
 
 /**
@@ -195,14 +189,15 @@ export function validateAntigravityPath(appPath: string): ValidationResult {
 export async function validateAll(config: ProxyConfig): Promise<ValidationResult[]> {
     const results: ValidationResult[] = [];
 
-    results.push(validateHost(config.host));
-    results.push(validatePort(config.port));
+    const host = validateHost(config.host);
+    const port = validatePort(config.port);
+    results.push(host, port);
 
     results.push(validateAntigravityPath(config.antigravityAppPath));
 
-    // 代理连通性检测最后做（可能耗时）
-    const proxyResult = await validateProxyConnection(config.host, config.port);
-    results.push(proxyResult);
+    if (host.valid && port.valid) {
+        results.push(await validateUpstreamProtocol(config));
+    }
 
     return results;
 }

@@ -11,7 +11,7 @@ typedef struct {
     int  port;
     int  timeout_ms;
     bool child_injection;
-    char type[16];   /* "socks5" or "http" */
+    char type[16];   /* SOCKS5 upstream; also used to build the proxy environment URL. */
 } Config;
 
 static Config global_config = {

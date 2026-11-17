@@ -2,7 +2,7 @@
   "name": "antigravity-proxy",
   "displayName": "Antigravity Proxy",
   "description": "macOS 透明代理注入工具 — 为 Antigravity 助手提供全流程自动化代理方案（编译、签名、注入、状态监控）。",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "raybz",
   "author": "ray",
   "repository": {
@@ -117,8 +117,12 @@
             "socks5",
             "http"
           ],
+          "enumDescriptions": [
+            "无认证 SOCKS5（注入库和 SNI 中继使用）",
+            "旧版设置。请切换到 SOCKS5。"
+          ],
           "default": "socks5",
-          "description": "代理类型"
+          "description": "上游代理类型。注入库和 SNI 中继需要无认证 SOCKS5。"
         },
         "antigravity-proxy.timeout": {
           "type": "number",
@@ -149,10 +153,10 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && node scripts/check-bins.js",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "npx vsce package --allow-missing-repository"
+    "package": "npx --package=@vscode/vsce vsce package --allow-missing-repository"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

@@ -70,7 +70,7 @@ function setRuntimeIndicator(state) {
     lastState = state;
     if (state === 'ok') {
         item.text = '🟢 AG-Proxy';
-        item.tooltip = '运行正常（hosts / 中继 / 应用 / 上游检测均已通过）· 点击打开配置';
+        item.tooltip = '运行条件已就绪（hosts / 中继 / 主进程 / SOCKS5 握手）· 点击打开配置';
     }
     else if (state === 'starting') {
         item.text = '🟡 AG-Proxy';

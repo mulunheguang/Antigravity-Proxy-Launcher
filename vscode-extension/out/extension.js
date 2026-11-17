@@ -91,6 +91,11 @@ function activate(context) {
             return;
         }
         const timeout = Math.min(Math.max(cfg.timeout || 5000, 1000), 30000);
+        const invalidAddress = [(0, validator_1.validateHost)(cfg.host), (0, validator_1.validatePort)(cfg.port)].find(result => !result.valid);
+        if (invalidAddress) {
+            vscode.window.showErrorMessage(invalidAddress.message.replace(/^❌\s*/, ''));
+            return;
+        }
         (0, logger_1.showLog)();
         (0, logger_1.log)('🔍 正在检测上游代理…');
         const tcp = await (0, validator_1.validateProxyConnection)(cfg.host, cfg.port, timeout);
@@ -98,18 +103,13 @@ function activate(context) {
             vscode.window.showErrorMessage(tcp.message.replace(/^❌\s*/, ''));
             return;
         }
-        if (cfg.type === 'socks5') {
-            const s = await (0, validator_1.validateSocks5Handshake)(cfg.host, cfg.port, timeout);
-            const text = s.message.replace(/^[✅❌]\s*/, '');
-            if (s.valid) {
-                vscode.window.showInformationMessage(text);
-            }
-            else {
-                vscode.window.showErrorMessage(text);
-            }
+        const result = await (0, validator_1.validateUpstreamProtocol)({ ...cfg, timeout });
+        const message = result.message.replace(/^[✅❌]\s*/, '');
+        if (result.valid) {
+            vscode.window.showInformationMessage(message);
         }
         else {
-            vscode.window.showInformationMessage(`${tcp.message.replace(/^[✅❌]\s*/, '')}（HTTP 类型：中继仍按 SOCKS5 连接该端口，请确认上游协议）`);
+            vscode.window.showErrorMessage(message);
         }
     }
     // 注册命令

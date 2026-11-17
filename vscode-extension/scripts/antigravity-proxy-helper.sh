@@ -14,6 +14,17 @@ DOMAINS=(
 PIDF=/tmp/antigravity-relay.pid
 LOGF=/tmp/antigravity-relay.log
 
+resolve_executable() {
+  local bundle="$1" name executable
+  name=$(/usr/bin/plutil -extract CFBundleExecutable raw -expect string -n -- "$bundle/Contents/Info.plist" 2>/dev/null) || return 1
+  case "$name" in
+    ''|.|..|*/*|*$'\r'*|*$'\n'*) return 1 ;;
+  esac
+  executable="$bundle/Contents/MacOS/$name"
+  [ -f "$executable" ] && [ -x "$executable" ] || return 1
+  printf '%s\n' "$executable"
+}
+
 stop_relay() {
   if [ -f "$PIDF" ]; then
     OLD="$(cat "$PIDF" 2>/dev/null || true)"
@@ -59,8 +70,8 @@ cmd_cleanup_all() {
 cmd_strip_lsenvironment() {
   bundle="${1:?用法: strip-lsenvironment /path/to/Antigravity.app}"
   pl="${bundle}/Contents/Info.plist"
-  if [ ! -f "$pl" ]; then
-    echo "缺少 Info.plist: $pl" >&2
+  if ! executable=$(resolve_executable "$bundle"); then
+    echo "无法从 Info.plist 解析可执行主程序: $bundle" >&2
     exit 1
   fi
   echo "[strip-lsenvironment] 移除 Antigravity 注入键 → $pl"
@@ -68,7 +79,7 @@ cmd_strip_lsenvironment() {
     /usr/libexec/PlistBuddy -c "Delete :LSEnvironment:$k" "$pl" 2>/dev/null || true
   done
   _remaining=$(/usr/libexec/PlistBuddy -c "Print :LSEnvironment" "$pl" 2>/dev/null || true)
-  if [ -z "$_remaining" ] || echo "$_remaining" | grep -qE '^Dict[[:space:]]*\{[[:space:]]*\}[[:space:]]*$'; then
+  if [ -z "$_remaining" ] || [ "$(printf '%s' "$_remaining" | tr -d '[:space:]')" = 'Dict{}' ]; then
     /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$pl" 2>/dev/null || true
     echo "[strip-lsenvironment] LSEnvironment dict 已清空并移除"
   else
@@ -94,7 +105,7 @@ ENT
       codesign -f -s - --entitlements "$ent" "$f" || { rm -f "$ent"; exit 1; }
     fi
   }
-  sign_one "${bundle}/Contents/MacOS/Electron"
+  sign_one "${bundle}/Contents/Resources/bin/language_server"
   sign_one "${bundle}/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper"
   sign_one "${bundle}/Contents/Frameworks/Antigravity Helper (GPU).app/Contents/MacOS/Antigravity Helper (GPU)"
   sign_one "${bundle}/Contents/Frameworks/Antigravity Helper (Renderer).app/Contents/MacOS/Antigravity Helper (Renderer)"
@@ -104,11 +115,13 @@ ENT
     sign_one "$f"
   done
   shopt -u nullglob
+  sign_one "$executable"
   rm -f "$ent"
   echo "[strip-lsenvironment] 完成"
 }
 
 case "${1:-}" in
+  resolve-executable) resolve_executable "${2:?用法: resolve-executable /path/to/Antigravity.app}" ;;
   write-hosts) cmd_write_hosts ;;
   flush-dns) cmd_flush_dns ;;
   stop-relay) stop_relay ;;
@@ -122,7 +135,7 @@ case "${1:-}" in
     cmd_strip_lsenvironment "$1"
     ;;
   *)
-    echo "用法: $0 write-hosts|flush-dns|stop-relay|start-relay <relay> <host> <port>|cleanup-all|strip-lsenvironment <Antigravity.app>" >&2
+    echo "用法: $0 resolve-executable <Antigravity.app>|write-hosts|flush-dns|stop-relay|start-relay <relay> <host> <port>|cleanup-all|strip-lsenvironment <Antigravity.app>" >&2
     exit 1
     ;;
 esac

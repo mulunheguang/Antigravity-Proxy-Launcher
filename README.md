@@ -1,3 +1,23 @@
+# Antigravity Proxy Launcher
+
+A standalone transparent proxy launcher for Antigravity on Apple Silicon Macs. It routes selected service domains through a local SOCKS5 proxy using hosts mappings and a TLS SNI relay. Click the launcher to prepare the proxy and open Antigravity, with settings, diagnostics and logs available from the **AG** menu bar item.
+
+## Build and use the launcher
+
+1. Install Apple's Xcode Command Line Tools with `xcode-select --install`.
+2. Keep your local SOCKS5 proxy running and install Antigravity at `/Applications/Antigravity.app`.
+3. Run `./scripts/build-launcher.sh` from this repository.
+4. Move `dist/Antigravity Launcher.app` to your Applications folder and drag it to the Dock.
+5. Launch it and authorize the privileged setup when prompted. Default proxy settings are `127.0.0.1:1082`. Use **AG → 编辑配置…** to change your settings.
+
+If your proxy uses another port, dismiss the connection error and edit the configuration through **AG**, then choose **打开 Antigravity** to retry. Administrator authorization is required again after rebooting or restarting the relay.
+
+See [the launcher guide](launcher/README.md) for configuration, cleanup, diagnostics and supported domains. The launcher uses the SNI relay mode. App login and AI service behavior depend on the app version, domain coverage and upstream proxy.
+
+This project builds on [raybz/Antigravity-Proxy](https://github.com/raybz/Antigravity-Proxy). Upstream code and attribution are retained under the [MIT license](LICENSE). The application icon is copied from your local Antigravity installation during the build.
+
+---
+
 # Antigravity-Proxy for macOS 🚀
 
 <p align="center">
@@ -10,7 +30,7 @@
   <img src="vscode-extension/icon.png" width="128" alt="Antigravity Proxy Icon"/>
 </p>
 
-> Transparent proxy injection for macOS using `DYLD_INSERT_LIBRARIES`, routing Antigravity (and other processes) through SOCKS5/HTTP **without** a TUN/TAP virtual NIC.
+> Transparent proxy injection for macOS using `DYLD_INSERT_LIBRARIES`, routing Antigravity (and other processes) through SOCKS5 **without** a TUN/TAP virtual NIC.
 
 ---
 
@@ -18,7 +38,7 @@
 
 **Repository:** [github.com/raybz/Antigravity-Proxy](https://github.com/raybz/Antigravity-Proxy)
 
-`Antigravity-Proxy` fixes **Antigravity not respecting the system proxy**. Its language server uses Go’s DNS resolver and bypasses typical macOS proxy hooks. This project combines **`/etc/hosts`**, an **SNI relay on :443**, and **`DYLD_INSERT_LIBRARIES` injection** to steer traffic through your SOCKS5/HTTP proxy.
+`Antigravity-Proxy` fixes **Antigravity not respecting the system proxy**. Its language server uses Go’s DNS resolver and bypasses typical macOS proxy hooks. This project combines **`/etc/hosts`**, an **SNI relay on :443**, and **`DYLD_INSERT_LIBRARIES` injection** to steer traffic through your SOCKS5 proxy.
 
 | Layer | Technique | Role |
 |------|-----------|------|
@@ -44,7 +64,7 @@
 
 ## Quick start
 
-### VS Code extension (recommended)
+### VS Code extension (optional)
 
 Install `vscode-extension/antigravity-proxy-*.vsix`. Extension docs (same file): [English](vscode-extension/README.md#readme-lang-en) · [简体中文](vscode-extension/README.md#readme-lang-zh).
 
@@ -62,7 +82,7 @@ xcode-select --install
 proxy:
   host: "127.0.0.1"
   port: 10808
-  type: "socks5"   # or http
+  type: "socks5"   # no authentication
 ```
 
 **3. Run**

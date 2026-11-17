@@ -1,3 +1,23 @@
+# Antigravity Proxy Launcher
+
+Antigravity 专用的 macOS 透明代理启动器。通过 hosts 域名映射与 TLS SNI 中继，将指定服务流量交给本地 SOCKS5 代理。点击图标即可准备代理并打开 Antigravity，菜单栏 **AG** 提供配置、代理检测和日志入口。
+
+## 构建与使用独立启动器
+
+1. 使用 Apple Silicon（M 系列）Mac，并通过 `xcode-select --install` 安装命令行工具。
+2. 安装 Antigravity 到 `/Applications/Antigravity.app`，保持本地 SOCKS5 代理运行。
+3. 在仓库根目录执行 `./scripts/build-launcher.sh`。
+4. 将生成的 `dist/Antigravity Launcher.app` 移到自己的应用程序文件夹，再拖到 Dock。
+5. 点击启动器，按提示授权。默认代理为 `127.0.0.1:1082`，通过 **AG → 编辑配置…** 修改。
+
+如果代理端口不同，首次启动可能提示连接失败。关闭提示后，在 **AG** 菜单修改配置，再点击 **打开 Antigravity** 重试。重启电脑后首次准备中继，或者重新启动中继时，需要管理员授权。
+
+详细的配置、清理、诊断与域名覆盖范围见 [启动器使用说明](launcher/README.md)。启动器采用 SNI 中继方案，实际登录和 AI 服务连接情况受应用版本、覆盖域名及上游代理影响。
+
+本项目基于 [raybz/Antigravity-Proxy](https://github.com/raybz/Antigravity-Proxy) 开发，保留原项目代码及署名，使用 [MIT 许可证](LICENSE)。应用图标在构建时从本机安装的 Antigravity 复制。
+
+---
+
 # Antigravity-Proxy for macOS 🚀
 
 <p align="center">
@@ -10,7 +30,7 @@
   <img src="vscode-extension/icon.png" width="128" alt="Antigravity Proxy Icon"/>
 </p>
 
-> 基于 `DYLD_INSERT_LIBRARIES` 的透明代理注入工具，让 Antigravity（AI 编程助手）等进程走 SOCKS5/HTTP 代理，**无需** TUN/TAP 虚拟网卡。
+> 基于 `DYLD_INSERT_LIBRARIES` 的透明代理注入工具，让 Antigravity（AI 编程助手）等进程走 SOCKS5 代理，**无需** TUN/TAP 虚拟网卡。
 
 ---
 
@@ -44,7 +64,7 @@
 
 ## 快速开始
 
-### VS Code 插件（推荐）
+### VS Code 插件（可选）
 
 安装 `vscode-extension/antigravity-proxy-*.vsix`。扩展说明（同一文档）：[简体中文](vscode-extension/README.md#readme-lang-zh) · [English](vscode-extension/README.md#readme-lang-en)
 
@@ -62,7 +82,7 @@ xcode-select --install
 proxy:
   host: "127.0.0.1"
   port: 10808
-  type: "socks5"   # 或 http
+  type: "socks5"   # 无认证
 ```
 
 **3. 一键**

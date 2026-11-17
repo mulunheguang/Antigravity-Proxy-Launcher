@@ -10,7 +10,8 @@ import {
     disableAutoLaunchInAllConfigScopes,
 } from './configManager';
 import { log, logError, logSuccess, showLog } from './logger';
-import { validateAntigravityPath, detectAntigravityPath } from './validator';
+import { validateUpstreamProtocol } from './validator';
+import { matchAntigravityProcess, resolveAntigravityExecutable } from './antigravityApp';
 import { RELAY_DOMAINS, HOSTS_MARKER } from './relayDomains';
 import { RELAY_EXECUTABLE, RELAY_LOG_PATH, RELAY_PID_PATH } from './runtimeConstants';
 import { isSudoHelperInstalled, isHelperOutdated, SUDO_HELPER_PATH } from './sudoHelper';
@@ -60,6 +61,10 @@ export function onRestoreStockDone(listener: RestoreStockListener): { dispose():
 
 const ANTIGRAVITY_ENTITLEMENTS_PATH = '/tmp/antigravity_entitlements.plist';
 
+function shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function writeAntigravityEntitlementsFile(): void {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -75,9 +80,10 @@ function writeAntigravityEntitlementsFile(): void {
 }
 
 /** 需重签名的可执行文件（含任意架构 language_server_macos_*） */
-function bundleExecutableSignPaths(appPath: string): string[] {
+function bundleExecutableSignPaths(executable: string): string[] {
+    const appPath = path.resolve(executable, '../../..');
     const paths: string[] = [
-        path.join(appPath, 'Contents/MacOS/Electron'),
+        path.join(appPath, 'Contents/Resources/bin/language_server'),
         path.join(appPath, 'Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper'),
         path.join(appPath, 'Contents/Frameworks/Antigravity Helper (GPU).app/Contents/MacOS/Antigravity Helper (GPU)'),
         path.join(
@@ -198,63 +204,55 @@ async function openLauncherInTerminalApp(launcherPath: string): Promise<void> {
     await runShell(`open ${JSON.stringify(launcherPath)}`, '/tmp', false, 30000);
 }
 
-function appendRootCodesignBlock(body: string, appPath: string): string {
-    let b = body;
-    b += `ENT=${JSON.stringify(ANTIGRAVITY_ENTITLEMENTS_PATH)}\n`;
-    for (const p of bundleExecutableSignPaths(appPath)) {
-        b += `if [ -f ${JSON.stringify(p)} ]; then echo "codesign: ${p}"; codesign -f -s - --entitlements "$ENT" ${JSON.stringify(
-            p
-        )}; fi\n`;
+function appendRootCodesignBlock(body: string, executable: string): string {
+    let b = body + `ENT=${shellQuote(ANTIGRAVITY_ENTITLEMENTS_PATH)}\n`;
+    for (const p of bundleExecutableSignPaths(executable)) {
+        const target = shellQuote(p);
+        b += `if [ -f ${target} ]; then codesign -f -s - --entitlements "$ENT" ${target}; fi\n`;
     }
+    b += `codesign -f -s - --entitlements "$ENT" ${shellQuote(executable)}\n`;
     return b;
 }
 
-function writeRootStripStockScript(appPath: string): string {
+function writeRootStripStockScript(executable: string): string {
     writeAntigravityEntitlementsFile();
     const scriptPath = `/tmp/antigravity-restore-stock-${Date.now()}.sh`;
-    const plist = path.join(appPath, 'Contents', 'Info.plist');
+    const plist = path.resolve(executable, '../../Info.plist');
     let body = '#!/bin/bash\nset -e\n';
     body += `echo "[Antigravity Proxy] 移除 Antigravity 注入键并重签名（root）"\n`;
-    body += `PLIST=${JSON.stringify(plist)}\n`;
+    body += `PLIST=${shellQuote(plist)}\n`;
     for (const key of LSENVIRONMENT_STRIP_KEYS) {
         body += `/usr/libexec/PlistBuddy -c "Delete :LSEnvironment:${key}" "$PLIST" 2>/dev/null || true\n`;
     }
     // 删完注入键后检查 dict 是否已变空：空则删整个 dict，非空则保留（避免误删 MallocNanoZone 等系统/第三方键）
     body += `_remaining=$(/usr/libexec/PlistBuddy -c "Print :LSEnvironment" "$PLIST" 2>/dev/null || true)\n`;
-    body += `if [ -z "$_remaining" ] || echo "$_remaining" | grep -qE '^Dict\\s*\\{\\s*\\}\\s*$'; then\n`;
+    body += `if [ -z "$_remaining" ] || [ "$(printf '%s' "$_remaining" | tr -d '[:space:]')" = 'Dict{}' ]; then\n`;
     body += `  /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$PLIST" 2>/dev/null || true\n`;
     body += `  echo "[Antigravity Proxy] LSEnvironment dict 已清空并移除"\n`;
     body += `else\n`;
     body += `  echo "[Antigravity Proxy] LSEnvironment 仍含非代理键，保留 dict：$_remaining"\n`;
     body += `fi\n`;
-    body = appendRootCodesignBlock(body, appPath);
+    body = appendRootCodesignBlock(body, executable);
     body += `echo "[Antigravity Proxy] 恢复原生签名完成"\n`;
     fs.writeFileSync(scriptPath, body, { mode: 0o755 });
     return scriptPath;
 }
 
-function writeRootResignScript(appPath: string, configYamlPath: string): string {
+function writeRootResignScript(executable: string, configYamlPath: string): string {
     writeAntigravityEntitlementsFile();
     const scriptPath = `/tmp/antigravity-resign-${Date.now()}.sh`;
-    const plist = path.join(appPath, 'Contents', 'Info.plist');
+    const plist = path.resolve(executable, '../../Info.plist');
     let body = '#!/bin/bash\nset -e\n';
     body += `echo "[Antigravity Proxy] 写入 LSEnvironment 并重签名（root）"\n`;
-    body += `PLIST=${JSON.stringify(plist)}\n`;
+    body += `PLIST=${shellQuote(plist)}\n`;
     body += `/usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$PLIST" 2>/dev/null || true\n`;
     body += `/usr/libexec/PlistBuddy -c ${JSON.stringify('Add :LSEnvironment dict')} "$PLIST"\n`;
     const addCfg = `Add :LSEnvironment:ANTIGRAVITY_CONFIG string ${configYamlPath}`;
     body += `/usr/libexec/PlistBuddy -c ${JSON.stringify(addCfg)} "$PLIST"\n`;
-    body = appendRootCodesignBlock(body, appPath);
+    body = appendRootCodesignBlock(body, executable);
     body += `echo "[Antigravity Proxy] 重签名完成"\n`;
     fs.writeFileSync(scriptPath, body, { mode: 0o755 });
     return scriptPath;
-}
-
-/** 解析主应用 .app 路径（配置优先，否则自动探测） */
-export function resolveAntigravityBundlePath(): string {
-    const cfg = getConfig();
-    const manual = (cfg.antigravityAppPath && cfg.antigravityAppPath.trim()) || '';
-    return manual || detectAntigravityPath() || '';
 }
 
 /**
@@ -359,7 +357,7 @@ function runShell(
     });
 }
 
-/** 全量健康探测（hosts、relay、Electron、内置文件、上游 TCP/SOCKS5）— 全部通过才为 true */
+/** 运行状态探测（hosts、中继、Antigravity 主进程、内置文件、SOCKS5 协商） */
 async function checkActualStatus(): Promise<boolean> {
     const config = getConfig();
     if (!isConfigComplete(config)) {
@@ -455,10 +453,10 @@ export async function start(): Promise<void> {
         return;
     }
 
-    const agPathCheck = validateAntigravityPath(config.antigravityAppPath);
-    if (!agPathCheck.valid) {
+    const executable = resolveAntigravityExecutable(config.antigravityAppPath);
+    if (!executable) {
         setRuntimeIndicator('bad');
-        vscode.window.showWarningMessage(agPathCheck.message.replace(/^❌\s*/, ''), '打开配置').then(choice => {
+        vscode.window.showWarningMessage('无法定位 Antigravity 主程序，请检查 .app 路径。', '打开配置').then(choice => {
             if (choice === '打开配置') {
                 vscode.commands.executeCommand('antigravity-proxy.openSettings');
             }
@@ -471,15 +469,22 @@ export async function start(): Promise<void> {
         return;
     }
 
-    // 用户主动启动代理，清除「手动禁用」全局标志
-    await setProxyManuallyDisabled(false);
-
     startBusy = true;
     setRuntimeIndicator('starting');
     /* 不自动 showLog：状态栏点按时与 Output/终端抢焦点易触发部分宿主不稳；需要时用户可命令面板「查看日志」 */
     log('启动流程已开始（日志仅追加到输出通道，不自动弹出）');
 
     try {
+        const upstream = await validateUpstreamProtocol(config);
+        if (!upstream.valid) {
+            setRuntimeIndicator('bad');
+            void vscode.window.showWarningMessage(upstream.message);
+            return;
+        }
+
+        // 用户主动启动代理，清除「手动禁用」全局标志
+        await setProxyManuallyDisabled(false);
+
         /* 让出 UI 线程，避免在「状态栏命令」同步栈里立刻 createTerminal */
         await new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -489,12 +494,10 @@ export async function start(): Promise<void> {
         // 2. 获取组件路径
         const dylibPath = getBinaryPath('libantigravity.dylib');
         const relayPath = getBinaryPath(RELAY_EXECUTABLE);
-        const appPath = config.antigravityAppPath;
-
         log(`📍 组件路径: 
   Dylib: ${dylibPath}
   Relay: ${relayPath}
-  App: ${appPath}`);
+  App: ${executable}`);
 
         const useHelp = isSudoHelperInstalled();
         const terminal = createPrivilegeTerminal('Antigravity Proxy');
@@ -502,7 +505,7 @@ export async function start(): Promise<void> {
 
         log(useHelp ? '🔑 使用免密 helper 准备环境…' : '🔑 正在准备环境（需要 sudo 权限）…');
 
-        /* 勿对 EXIT 挂 trap：否则 Electron 正常退出后 shell 结束会误跑 cleanup，把 hosts/中继清掉。
+        /* 勿对 EXIT 挂 trap：否则 Antigravity 正常退出后 shell 结束会误跑 cleanup，把 hosts/中继清掉。
          * 仅在中断安装流程时清理；要还原请用扩展「清理 hosts 与中继」。最后用 exec 驻留进程，避免多余父 shell。 */
         const cleanupCmd = useHelp
             ? `
@@ -562,7 +565,7 @@ ANTIGRAVITY_CONFIG="${configYamlPath}" \\
 ALL_PROXY="${config.type}://${config.host}:${config.port}" \\
 HTTPS_PROXY="${config.type}://${config.host}:${config.port}" \\
 HTTP_PROXY="${config.type}://${config.host}:${config.port}" \\
-exec "${appPath}/Contents/MacOS/Electron"
+exec ${shellQuote(executable)}
 `;
 
         const scriptPath = `/tmp/antigravity-start-${Date.now()}.sh`;
@@ -696,6 +699,11 @@ export async function preparePrivilegedEnvironment(configOverride?: ProxyConfig)
         showLog();
     }
     try {
+        const upstream = await validateUpstreamProtocol(config);
+        if (!upstream.valid) {
+            void vscode.window.showWarningMessage(upstream.message);
+            return;
+        }
         syncConfigYaml(config);
         const relayPath = getBinaryPath(RELAY_EXECUTABLE);
 
@@ -761,7 +769,10 @@ export async function stop(): Promise<void> {
     log('⏹ 正在停止代理...');
     try {
         warmUpUntilMs = 0;
-        await runShell('pkill -f "Antigravity.app/Contents/MacOS/Electron"').catch(() => {});
+        const executable = resolveAntigravityExecutable(getConfig().antigravityAppPath);
+        if (executable) {
+            await matchAntigravityProcess(executable, 'pkill');
+        }
         await cleanupPrivilegedEnvironment();
 
         isProxyRunning = false;
@@ -789,15 +800,15 @@ function formatAdminPrivilegeError(err: unknown): string {
  */
 export async function resign(): Promise<void> {
     const config = getConfig();
-    const appPath = resolveAntigravityBundlePath();
-    if (!appPath) {
+    const executable = resolveAntigravityExecutable(config.antigravityAppPath);
+    if (!executable) {
         vscode.window.showErrorMessage('未找到 Antigravity.app，请先配置或安装到 /Applications');
         return;
     }
 
     log('🔑 正在执行重签名（系统密码框提权）…');
     const configYamlPath = syncConfigYaml(config);
-    const scriptPath = writeRootResignScript(appPath, configYamlPath);
+    const scriptPath = writeRootResignScript(executable, configYamlPath);
     try {
         const out = await runWithAdminPrivileges(scriptPath);
         if (out) {
@@ -851,16 +862,15 @@ export async function restoreStockBehavior(): Promise<void> {
         logError(`写入设置失败（自动启动/自动准备）: ${e?.message || e}`);
     }
     log('已在所有配置作用域关闭「自动启动」与「自动准备 hosts/中继」（含工作区 settings）。');
+    const executable = resolveAntigravityExecutable(getConfig().antigravityAppPath);
     try {
-        await runShell('pkill -f "Antigravity.app/Contents/MacOS/Electron"').catch(() => {});
-        // 等待进程实际退出（最多 8 秒，每秒检查一次），避免 codesign 时报 resource busy
-        let waited = 0;
-        while (waited < 8000) {
-            await delay(1000);
-            waited += 1000;
-            const still = await runShell('pgrep -f "Antigravity.app/Contents/MacOS/Electron"').catch(() => '');
-            if (!still || !(still as string).trim()) {
-                break;
+        if (executable && await matchAntigravityProcess(executable, 'pkill')) {
+            // 等待进程退出，避免 codesign 时报 resource busy。
+            for (let attempt = 0; attempt < 8; attempt += 1) {
+                await delay(1000);
+                if (!(await matchAntigravityProcess(executable, 'pgrep'))) {
+                    break;
+                }
             }
         }
         await cleanupPrivilegedEnvironment();
@@ -874,12 +884,12 @@ export async function restoreStockBehavior(): Promise<void> {
         return;
     }
 
-    const appPath = resolveAntigravityBundlePath();
+    const appPath = executable && path.resolve(executable, '../../..');
     let stripOk = false;
     let stripDeferredToTerminal = false;
     if (appPath && isSudoHelperInstalled()) {
         try {
-            await runShell(`/usr/bin/sudo ${SUDO_HELPER_PATH} strip-lsenvironment ${JSON.stringify(appPath)}`, '/tmp', false, 120000);
+            await runShell(`/usr/bin/sudo ${SUDO_HELPER_PATH} strip-lsenvironment ${shellQuote(appPath)}`, '/tmp', false, 120000);
             stripOk = true;
             logSuccess('已通过免密 helper 移除 LSEnvironment 并完成重签名');
         } catch (e: any) {
@@ -889,8 +899,8 @@ export async function restoreStockBehavior(): Promise<void> {
         }
     }
 
-    if (appPath && !stripOk) {
-        const scriptPath = writeRootStripStockScript(appPath);
+    if (executable && !stripOk) {
+        const scriptPath = writeRootStripStockScript(executable);
         try {
             const out = await runWithAdminPrivileges(scriptPath);
             if (out) {

@@ -40,6 +40,7 @@ exports.isProxyFullyHealthy = isProxyFullyHealthy;
 const fs = __importStar(require("fs"));
 const cp = __importStar(require("child_process"));
 const path = __importStar(require("path"));
+const antigravityApp_1 = require("./antigravityApp");
 const validator_1 = require("./validator");
 const relayDomains_1 = require("./relayDomains");
 const runtimeConstants_1 = require("./runtimeConstants");
@@ -111,13 +112,6 @@ function readHostsStatus() {
         detail: `缺少或未完整写入: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''}`,
         missing,
     };
-}
-function resolveAntigravityBundleForDiagnostics(config) {
-    const manual = (config.antigravityAppPath && config.antigravityAppPath.trim()) || '';
-    if (manual && fs.existsSync(manual)) {
-        return manual;
-    }
-    return (0, validator_1.detectAntigravityPath)() || '';
 }
 /** Antigravity 注入相关的 LSEnvironment 键；只要有其中之一存在就判为异常 */
 const ANTIGRAVITY_LSENVIRONMENT_KEYS = [
@@ -271,40 +265,25 @@ async function collectDiagnostics(extensionRoot, config) {
             detail: tcp.message,
             hint: tcp.valid ? undefined : '请确认 Clash / V2Ray 等本地代理已开启且端口正确',
         });
-        if (config.type === 'socks5') {
-            const socks = await (0, validator_1.validateSocks5Handshake)(config.host, config.port, timeout);
-            items.push({
-                key: 'upstream_socks5',
-                title: '上游代理（SOCKS5 握手）',
-                ok: socks.valid,
-                detail: socks.message,
-                hint: socks.valid
-                    ? undefined
-                    : '中继与注入库目前按 SOCKS5 连接上游；HTTP 类型仅部分生效',
-            });
-        }
-        else {
-            items.push({
-                key: 'upstream_http',
-                title: '上游代理类型',
-                ok: true,
-                detail: `当前为 HTTP；SNI 中继 (${runtimeConstants_1.RELAY_EXECUTABLE}) 仍按 SOCKS5 连接上述端口`,
-                hint: '若连接失败，请将本地混合端口改为 SOCKS5 或在配置中选 socks5',
-            });
-        }
+        const socks = await (0, validator_1.validateUpstreamProtocol)({ ...config, timeout });
+        items.push({
+            key: 'upstream_socks5',
+            title: '上游代理（SOCKS5 握手）',
+            ok: socks.valid,
+            detail: socks.message,
+            hint: socks.valid ? undefined : validator_1.SOCKS5_REQUIRED,
+        });
     }
-    const ag = (0, validator_1.validateAntigravityPath)(config.antigravityAppPath);
+    const executable = (0, antigravityApp_1.resolveAntigravityExecutable)(config.antigravityAppPath);
     items.push({
         key: 'antigravity',
         title: 'Antigravity.app',
-        ok: ag.valid,
-        detail: ag.message,
-        hint: ag.valid ? undefined : '安装 Antigravity 或在配置中指定 .app 路径',
+        ok: Boolean(executable),
+        detail: executable ?? '无法从 Info.plist 解析可执行主程序',
+        hint: executable ? undefined : '安装 Antigravity 或在配置中指定 .app 路径',
     });
-    const agBundle = resolveAntigravityBundleForDiagnostics(config);
-    const electron = path.join(agBundle, 'Contents', 'MacOS', 'Electron');
-    if (agBundle && fs.existsSync(electron)) {
-        items.push(readLSEnvironmentStatus(agBundle));
+    if (executable) {
+        items.push(readLSEnvironmentStatus(path.resolve(executable, '../../..')));
     }
     const dylib = bundledBin(extensionRoot, 'libantigravity.dylib');
     const relay = bundledBin(extensionRoot, runtimeConstants_1.RELAY_EXECUTABLE);
@@ -420,15 +399,15 @@ async function needsPrepareEnvironmentSetup() {
     return false;
 }
 /**
- * 状态栏「全绿」条件：与诊断面板核心项一致（hosts、relay、Electron、上游连通、SOCKS5 等），任一步失败则为 false。
+ * 状态栏运行条件：hosts、中继进程、Antigravity 主进程、内置文件和 SOCKS5 协商。
  */
 async function isProxyFullyHealthy(extensionRoot, config) {
     try {
-        if (!config.host || !config.port) {
+        if (!config.host || !config.port || config.type !== 'socks5') {
             return false;
         }
-        const ag = (0, validator_1.validateAntigravityPath)(config.antigravityAppPath);
-        if (!ag.valid) {
+        const executable = (0, antigravityApp_1.resolveAntigravityExecutable)(config.antigravityAppPath);
+        if (!executable) {
             return false;
         }
         const dylib = bundledBin(extensionRoot, 'libantigravity.dylib');
@@ -444,24 +423,11 @@ async function isProxyFullyHealthy(extensionRoot, config) {
         if (!relayProc.ok) {
             return false;
         }
-        try {
-            await execShort('pgrep -f "Antigravity.app/Contents/MacOS/Electron"');
-        }
-        catch {
+        if (!(await (0, antigravityApp_1.matchAntigravityProcess)(executable, 'pgrep'))) {
             return false;
         }
         const timeout = Math.min(Math.max(config.timeout || 5000, 1000), 30000);
-        const tcp = await (0, validator_1.validateProxyConnection)(config.host, config.port, timeout);
-        if (!tcp.valid) {
-            return false;
-        }
-        if (config.type === 'socks5') {
-            const socks = await (0, validator_1.validateSocks5Handshake)(config.host, config.port, timeout);
-            if (!socks.valid) {
-                return false;
-            }
-        }
-        return true;
+        return (await (0, validator_1.validateUpstreamProtocol)({ ...config, timeout })).valid;
     }
     catch {
         return false;

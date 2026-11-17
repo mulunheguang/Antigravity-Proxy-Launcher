@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/time.h>
 #include <pthread.h>
@@ -118,36 +119,11 @@ static void ag_log(const char *color, const char *tag, const char *fmt, ...) {
 #define LOG_ERR(...)     ag_log(C_RED,             "ERROR",   __VA_ARGS__)
 #define LOG_SKIP(...)    ag_log(C_GRAY,            "SKIP",    __VA_ARGS__)
 
-/* ------------------------------------------------------------------ */
-/* Function pointer types                                              */
-/* ------------------------------------------------------------------ */
-typedef int (*connect_t)(int, const struct sockaddr*, socklen_t);
-typedef int (*getaddrinfo_t)(const char*, const char*, const struct addrinfo*, struct addrinfo**);
-typedef void (*freeaddrinfo_t)(struct addrinfo*);
-typedef int (*posix_spawn_t)(pid_t*, const char*, const posix_spawn_file_actions_t*,
-                             const posix_spawnattr_t*, char* const[], char* const[]);
-typedef struct hostent* (*gethostbyname_t)(const char*);
-typedef int (*execve_t)(const char*, char* const[], char* const[]);
-
-static connect_t      real_connect      = NULL;
-static getaddrinfo_t  real_getaddrinfo  = NULL;
-static freeaddrinfo_t real_freeaddrinfo = NULL;
-static posix_spawn_t  real_posix_spawn  = NULL;
-static gethostbyname_t real_gethostbyname = NULL;
-static execve_t       real_execve       = NULL;
-
 extern char **environ;
 
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 static void do_init(void) {
-    real_connect       = (connect_t)dlsym(RTLD_NEXT, "connect");
-    real_getaddrinfo   = (getaddrinfo_t)dlsym(RTLD_NEXT, "getaddrinfo");
-    real_freeaddrinfo  = (freeaddrinfo_t)dlsym(RTLD_NEXT, "freeaddrinfo");
-    real_posix_spawn   = (posix_spawn_t)dlsym(RTLD_NEXT, "posix_spawn");
-    real_gethostbyname = (gethostbyname_t)dlsym(RTLD_NEXT, "gethostbyname");
-    real_execve        = (execve_t)dlsym(RTLD_NEXT, "execve");
-
     init_procname();
 
     const char *cfg = getenv("ANTIGRAVITY_CONFIG");
@@ -179,9 +155,10 @@ static void apply_timeouts(int fd) {
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
-static int connect_to_proxy(int fd) {
+static int connect_to_proxy(int fd, sa_family_t family) {
     struct sockaddr_in proxy_addr;
     memset(&proxy_addr, 0, sizeof(proxy_addr));
+    proxy_addr.sin_len    = sizeof(proxy_addr);
     proxy_addr.sin_family = AF_INET;
     proxy_addr.sin_port   = htons(global_config.port);
     if (inet_pton(AF_INET, global_config.host, &proxy_addr.sin_addr) != 1) {
@@ -189,23 +166,61 @@ static int connect_to_proxy(int fd) {
         errno = EINVAL;
         return -1;
     }
-    return real_connect(fd, (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    if (family == AF_INET6) {
+        struct sockaddr_in6 mapped = {
+            .sin6_len = sizeof(mapped),
+            .sin6_family = AF_INET6,
+            .sin6_port = proxy_addr.sin_port,
+        };
+        mapped.sin6_addr.s6_addr[10] = 0xff;
+        mapped.sin6_addr.s6_addr[11] = 0xff;
+        memcpy(mapped.sin6_addr.s6_addr + 12, &proxy_addr.sin_addr, sizeof(proxy_addr.sin_addr));
+        return connect(fd, (struct sockaddr *)&mapped, sizeof(mapped));
+    }
+    return connect(fd, (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+}
+
+static int open_proxy_tunnel(int fd, sa_family_t family, const char *domain, uint16_t port,
+                             const struct in_addr *ipv4, const struct in6_addr *ipv6) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) return -1;
+
+    /* Finish SOCKS5 negotiation before returning a connected socket. */
+    bool nonblocking = (flags & O_NONBLOCK) != 0;
+    if (nonblocking && fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) return -1;
+
+    apply_timeouts(fd);
+    int result = connect_to_proxy(fd, family);
+    if (result == 0) {
+        errno = 0;
+        if (domain) {
+            result = socks5_handshake_domain(fd, domain, port);
+        } else if (ipv4) {
+            result = socks5_handshake_ipv4(fd, *ipv4, port);
+        } else {
+            result = socks5_handshake_ipv6(fd, *ipv6, port);
+        }
+    }
+    int error = errno ? errno : EPROTO;
+    if (nonblocking && fcntl(fd, F_SETFL, flags) < 0) return -1;
+    if (result < 0) errno = error;
+    return result;
 }
 
 /* ------------------------------------------------------------------ */
 /* Hook: connect()  — handles both AF_INET and AF_INET6               */
 /* ------------------------------------------------------------------ */
-int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
+static int proxy_connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     ensure_init();
 
-    if (!address) return real_connect(sockfd, address, address_len);
+    if (!address) return connect(sockfd, address, address_len);
 
     /* Only proxy TCP */
     int sock_type = 0;
     socklen_t optlen = sizeof(sock_type);
     getsockopt(sockfd, SOL_SOCKET, SO_TYPE, &sock_type, &optlen);
     if (sock_type != SOCK_STREAM) {
-        return real_connect(sockfd, address, address_len);
+        return connect(sockfd, address, address_len);
     }
 
     /* ── AF_INET ── */
@@ -218,10 +233,8 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
             if (target_port == 443 || target_port == 80) {
                 LOG_SKIP("local %s:%u (fd=%d)", inet_ntoa(addr_in->sin_addr), target_port, sockfd);
             }
-            return real_connect(sockfd, address, address_len);
+            return connect(sockfd, address, address_len);
         }
-
-        apply_timeouts(sockfd);
 
         const char *target_host = get_hostname_from_fake_ip(addr_in->sin_addr);
         const char *display_host = target_host ? target_host : inet_ntoa(addr_in->sin_addr);
@@ -231,17 +244,8 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
                     global_config.host, global_config.port,
                     sockfd, target_host ? "fakeip→domain" : "direct-ipv4");
 
-        if (connect_to_proxy(sockfd) < 0) {
-            LOG_ERR("proxy connect failed: %s", strerror(errno));
-            return -1;
-        }
-
-        int rc = target_host
-            ? socks5_handshake_domain(sockfd, target_host, target_port)
-            : socks5_handshake_ipv4(sockfd, addr_in->sin_addr, target_port);
-
-        if (rc < 0) {
-            LOG_ERR("SOCKS5 handshake failed for %s:%u", display_host, target_port);
+        if (open_proxy_tunnel(sockfd, AF_INET, target_host, target_port, &addr_in->sin_addr, NULL) < 0) {
+            LOG_ERR("SOCKS5 tunnel failed for %s:%u", display_host, target_port);
             return -1;
         }
         LOG_OK("tunnel established → %s:%u", display_host, target_port);
@@ -262,7 +266,7 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
                             b[12]==0&&b[13]==0&&b[14]==0&&b[15]==1);
         int is_linklocal6 = (b[0]==0xfe && (b[1]&0xc0)==0x80);
         if (is_loopback6 || is_linklocal6)
-            return real_connect(sockfd, address, address_len);
+            return connect(sockfd, address, address_len);
 
         /* Check if this is an IPv4-mapped IPv6 address ::ffff:x.x.x.x */
         int is_v4mapped = (b[0]==0&&b[1]==0&&b[2]==0&&b[3]==0&&
@@ -274,35 +278,35 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
 
         if (is_v4mapped) {
             /* Treat as IPv4 */
-            struct in_addr v4 = { .s_addr = *(uint32_t *)(b + 12) };
+            struct in_addr v4;
+            memcpy(&v4, b + 12, sizeof(v4));
             if (is_loopback_ipv4(v4) || is_private_ipv4(v4))
-                return real_connect(sockfd, address, address_len);
+                return connect(sockfd, address, address_len);
 
-            apply_timeouts(sockfd);
             const char *h = get_hostname_from_fake_ip(v4);
             LOG_CONNECT("[v4mapped] %s:%u  via %s:%d",
                         h ? h : inet_ntoa(v4), target_port,
                         global_config.host, global_config.port);
-            if (connect_to_proxy(sockfd) < 0) { LOG_ERR("proxy connect failed: %s", strerror(errno)); return -1; }
-            int rc = h ? socks5_handshake_domain(sockfd, h, target_port)
-                       : socks5_handshake_ipv4(sockfd, v4, target_port);
-            if (rc < 0) { LOG_ERR("SOCKS5 handshake failed [v4mapped] %s:%u", h?h:inet_ntoa(v4), target_port); return -1; }
+            if (open_proxy_tunnel(sockfd, AF_INET6, h, target_port, &v4, NULL) < 0) {
+                LOG_ERR("SOCKS5 tunnel failed [v4mapped] %s:%u", h ? h : inet_ntoa(v4), target_port);
+                return -1;
+            }
             LOG_OK("tunnel established → %s:%u", h ? h : inet_ntoa(v4), target_port);
             return 0;
         }
 
         /* Pure IPv6 — proxy via SOCKS5 IPv6 ATYP (0x04) */
-        apply_timeouts(sockfd);
         LOG_CONNECT("[ipv6] %s:%u  via %s:%d", host_str, target_port,
                     global_config.host, global_config.port);
-        if (connect_to_proxy(sockfd) < 0) { LOG_ERR("proxy connect failed: %s", strerror(errno)); return -1; }
-        int rc = socks5_handshake_ipv6(sockfd, addr6->sin6_addr, target_port);
-        if (rc < 0) { LOG_ERR("SOCKS5 handshake failed [ipv6] %s:%u", host_str, target_port); return -1; }
+        if (open_proxy_tunnel(sockfd, AF_INET6, NULL, target_port, NULL, &addr6->sin6_addr) < 0) {
+            LOG_ERR("SOCKS5 tunnel failed [ipv6] %s:%u", host_str, target_port);
+            return -1;
+        }
         LOG_OK("tunnel established → [%s]:%u", host_str, target_port);
         return 0;
     }
 
-    return real_connect(sockfd, address, address_len);
+    return connect(sockfd, address, address_len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -338,6 +342,7 @@ static struct addrinfo *make_addrinfo(struct in_addr ip, uint16_t port,
     struct addrinfo    *info = calloc(1, sizeof(struct addrinfo));
     struct sockaddr_in *addr = calloc(1, sizeof(struct sockaddr_in));
     if (!info || !addr) { free(info); free(addr); return NULL; }
+    addr->sin_len    = sizeof(*addr);
     addr->sin_family = AF_INET;
     addr->sin_addr   = ip;
     addr->sin_port   = htons(port);
@@ -354,31 +359,31 @@ static struct addrinfo *make_addrinfo(struct in_addr ip, uint16_t port,
 /* ------------------------------------------------------------------ */
 /* Hook: getaddrinfo()                                                  */
 /* ------------------------------------------------------------------ */
-int getaddrinfo(const char *hostname, const char *servname,
+static int proxy_getaddrinfo(const char *hostname, const char *servname,
                 const struct addrinfo *hints, struct addrinfo **res) {
     ensure_init();
 
-    if (!hostname) return real_getaddrinfo(hostname, servname, hints, res);
+    if (!hostname) return getaddrinfo(hostname, servname, hints, res);
 
     if (strcmp(hostname, "localhost") == 0 ||
         strcmp(hostname, "127.0.0.1") == 0 ||
         strcmp(hostname, "::1") == 0) {
-        return real_getaddrinfo(hostname, servname, hints, res);
+        return getaddrinfo(hostname, servname, hints, res);
     }
 
     struct in_addr  test4;
     struct in6_addr test6;
     if (inet_pton(AF_INET,  hostname, &test4) == 1 ||
         inet_pton(AF_INET6, hostname, &test6) == 1) {
-        return real_getaddrinfo(hostname, servname, hints, res);
+        return getaddrinfo(hostname, servname, hints, res);
     }
 
     if (hints && (hints->ai_flags & AI_NUMERICHOST)) {
-        return real_getaddrinfo(hostname, servname, hints, res);
+        return getaddrinfo(hostname, servname, hints, res);
     }
 
     if (hints && hints->ai_socktype == SOCK_DGRAM) {
-        return real_getaddrinfo(hostname, servname, hints, res);
+        return getaddrinfo(hostname, servname, hints, res);
     }
 
     uint16_t port = 0;
@@ -418,7 +423,7 @@ int getaddrinfo(const char *hostname, const char *servname,
     struct in_addr fake = get_fake_ip(hostname);
     if (fake.s_addr == 0) {
         LOG_ERR("fakeip table full, falling back for %s", hostname);
-        return real_getaddrinfo(hostname, servname, hints, res);
+        return getaddrinfo(hostname, servname, hints, res);
     }
 
     LOG_DNS("%s → fakeip %s (port %u)", hostname, inet_ntoa(fake), port);
@@ -430,57 +435,23 @@ int getaddrinfo(const char *hostname, const char *servname,
 }
 
 /* ------------------------------------------------------------------ */
-/* Hook: freeaddrinfo()                                                 */
-/* ------------------------------------------------------------------ */
-void freeaddrinfo(struct addrinfo *ai) {
-    ensure_init();
-    if (!ai) return;
-
-    struct addrinfo *cur = ai;
-    while (cur) {
-        struct addrinfo *next = cur->ai_next;
-
-        bool our_alloc = false;
-        if (cur->ai_addr && cur->ai_family == AF_INET) {
-            struct sockaddr_in *sin = (struct sockaddr_in *)cur->ai_addr;
-            struct in_addr base;
-            inet_pton(AF_INET, FAKE_IP_BASE, &base);
-            uint32_t base_ip = ntohl(base.s_addr);
-            uint32_t this_ip = ntohl(sin->sin_addr.s_addr);
-            if (this_ip >= base_ip && this_ip < base_ip + MAX_MAPPINGS)
-                our_alloc = true;
-        }
-
-        if (our_alloc) {
-            free(cur->ai_addr);
-            free(cur->ai_canonname);
-            free(cur);
-        } else {
-            cur->ai_next = NULL;
-            real_freeaddrinfo(cur);
-        }
-        cur = next;
-    }
-}
-
-/* ------------------------------------------------------------------ */
 /* Hook: gethostbyname()                                               */
 /* ------------------------------------------------------------------ */
-struct hostent* gethostbyname(const char *name) {
+static struct hostent* proxy_gethostbyname(const char *name) {
     ensure_init();
     if (!name || strcmp(name, "localhost") == 0 || strcmp(name, "127.0.0.1") == 0)
-        return real_gethostbyname(name);
+        return gethostbyname(name);
 
     struct in_addr test;
     if (inet_pton(AF_INET, name, &test) == 1)
-        return real_gethostbyname(name);
+        return gethostbyname(name);
 
     static __thread struct hostent  h;
     static __thread char           *addr_list[2];
     static __thread struct in_addr  addr;
 
     addr = get_fake_ip(name);
-    if (addr.s_addr == 0) return real_gethostbyname(name);
+    if (addr.s_addr == 0) return gethostbyname(name);
 
     LOG_DNS("gethostbyname: %s → fakeip %s", name, inet_ntoa(addr));
 
@@ -580,26 +551,26 @@ static void free_injected_env(char **new_env, char *const src_env[]) {
 /* ------------------------------------------------------------------ */
 /* Hook: posix_spawn() — child process injection                       */
 /* ------------------------------------------------------------------ */
-int posix_spawn(pid_t *pid, const char *path,
+static int proxy_posix_spawn(pid_t *pid, const char *path,
                 const posix_spawn_file_actions_t *file_actions,
                 const posix_spawnattr_t *attrp,
                 char *const argv[], char *const envp[]) {
     ensure_init();
 
     if (!global_config.child_injection)
-        return real_posix_spawn(pid, path, file_actions, attrp, argv, envp);
+        return posix_spawn(pid, path, file_actions, attrp, argv, envp);
 
     /* basename for display */
-    char pathcopy[256];
+    char pathcopy[256] = {0};
     strncpy(pathcopy, path ? path : "", sizeof(pathcopy)-1);
     LOG_SPAWN("posix_spawn → %s  (envp=%s)",
               basename(pathcopy), envp ? "provided" : "NULL(inherit)");
 
     char **new_env = build_injected_env(envp);
     if (!new_env)
-        return real_posix_spawn(pid, path, file_actions, attrp, argv, envp);
+        return posix_spawn(pid, path, file_actions, attrp, argv, envp);
 
-    int rc = real_posix_spawn(pid, path, file_actions, attrp, argv, new_env);
+    int rc = posix_spawn(pid, path, file_actions, attrp, argv, new_env);
     if (rc == 0 && pid)
         LOG_OK("posix_spawn child pid=%d  path=%s", (int)*pid, path ? path : "?");
     else if (rc != 0)
@@ -612,11 +583,11 @@ int posix_spawn(pid_t *pid, const char *path,
 /* ------------------------------------------------------------------ */
 /* Hook: execve() — catches fork+exec child launches (Electron)       */
 /* ------------------------------------------------------------------ */
-int execve(const char *path, char *const argv[], char *const envp[]) {
+static int proxy_execve(const char *path, char *const argv[], char *const envp[]) {
     ensure_init();
 
     if (!global_config.child_injection)
-        return real_execve(path, argv, envp);
+        return execve(path, argv, envp);
 
     /* Skip system binaries */
     if (path &&
@@ -625,20 +596,34 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
          strncmp(path, "/sbin/",     6) == 0 ||
          strncmp(path, "/System/",   8) == 0 ||
          strncmp(path, "/usr/sbin/",10) == 0)) {
-        return real_execve(path, argv, envp);
+        return execve(path, argv, envp);
     }
 
-    char pathcopy[256];
+    char pathcopy[256] = {0};
     strncpy(pathcopy, path ? path : "", sizeof(pathcopy)-1);
     LOG_EXEC("execve → %s", basename(pathcopy));
 
     char **new_env = build_injected_env(envp);
     if (!new_env)
-        return real_execve(path, argv, envp);
+        return execve(path, argv, envp);
 
-    int rc = real_execve(path, argv, new_env);
+    int rc = execve(path, argv, new_env);
     /* execve only returns on failure */
     LOG_ERR("execve failed rc=%d  errno=%s  path=%s", rc, strerror(errno), path ? path : "?");
     free_injected_env(new_env, envp);
     return rc;
 }
+
+/* Bind calls from two-level Mach-O images to our hooks. Calls to the
+ * original symbols from this image still resolve to libSystem. */
+__attribute__((used, section("__DATA,__interpose")))
+static const struct {
+    const void *replacement;
+    const void *original;
+} interpositions[] = {
+    { (const void *)proxy_connect, (const void *)connect },
+    { (const void *)proxy_getaddrinfo, (const void *)getaddrinfo },
+    { (const void *)proxy_gethostbyname, (const void *)gethostbyname },
+    { (const void *)proxy_posix_spawn, (const void *)posix_spawn },
+    { (const void *)proxy_execve, (const void *)execve },
+};

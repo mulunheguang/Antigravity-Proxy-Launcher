@@ -19,7 +19,7 @@ import { openConfigWebview } from './configWebview';
 import { openDiagnosticsPanel } from './diagnosticsPanel';
 import { installSudoHelper } from './installHelper';
 import { showLog, log, dispose as disposeLogger } from './logger';
-import { validateProxyConnection, validateSocks5Handshake } from './validator';
+import { validateHost, validatePort, validateProxyConnection, validateUpstreamProtocol } from './validator';
 import { needsPrepareEnvironmentSetup } from './diagnostics';
 import { isSudoHelperInstalled, isHelperOutdated } from './sudoHelper';
 
@@ -81,6 +81,11 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         const timeout = Math.min(Math.max(cfg.timeout || 5000, 1000), 30000);
+        const invalidAddress = [validateHost(cfg.host), validatePort(cfg.port)].find(result => !result.valid);
+        if (invalidAddress) {
+            vscode.window.showErrorMessage(invalidAddress.message.replace(/^❌\s*/, ''));
+            return;
+        }
         showLog();
         log('🔍 正在检测上游代理…');
         const tcp = await validateProxyConnection(cfg.host, cfg.port, timeout);
@@ -88,18 +93,12 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage(tcp.message.replace(/^❌\s*/, ''));
             return;
         }
-        if (cfg.type === 'socks5') {
-            const s = await validateSocks5Handshake(cfg.host, cfg.port, timeout);
-            const text = s.message.replace(/^[✅❌]\s*/, '');
-            if (s.valid) {
-                vscode.window.showInformationMessage(text);
-            } else {
-                vscode.window.showErrorMessage(text);
-            }
+        const result = await validateUpstreamProtocol({ ...cfg, timeout });
+        const message = result.message.replace(/^[✅❌]\s*/, '');
+        if (result.valid) {
+            vscode.window.showInformationMessage(message);
         } else {
-            vscode.window.showInformationMessage(
-                `${tcp.message.replace(/^[✅❌]\s*/, '')}（HTTP 类型：中继仍按 SOCKS5 连接该端口，请确认上游协议）`
-            );
+            vscode.window.showErrorMessage(message);
         }
     }
 
