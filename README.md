@@ -1,38 +1,57 @@
-# Antigravity Proxy Launcher
+# Antigravity Proxy Launcher for macOS 🚀
 
-**给 Antigravity App 使用的独立透明代理启动器。** 点击一个图标，即可检查本地代理、准备代理中继，再打开 Antigravity，日常使用无需先打开 IDE。
+<p align="center">
+  <b>Antigravity App / IDE 透明代理启动器</b>
+</p>
 
-当 Antigravity 的部分服务请求无法正确使用本地代理，出现登录或 AI 服务连接问题时，本项目可以将已配置的服务域名流量转发到本地 SOCKS5 代理。转发效果取决于代理可用性与域名覆盖范围。
+> 点击图标，自动检查本地 SOCKS5 代理、准备 SNI 中继并打开 Antigravity。适用于 Antigravity App 与 Antigravity IDE，支持菜单栏配置、代理检测和日志查看。
 
-本项目通过 **hosts 域名映射 + TLS SNI 中继 + SOCKS5 上游** 实现按域名透明转发。当前覆盖的七个域名列在文末。启动器适用于 Apple Silicon（M 系列）Mac。
+---
 
-## 能做什么
+## 项目介绍
 
-- 点击启动器，自动检查代理并打开 Antigravity App。
-- 将指定 Google / Antigravity 服务域名的 HTTPS 流量交给本地 SOCKS5 代理。
-- 在屏幕顶部的 **AG** 菜单中修改配置、检测代理、查看日志和停止中继。
-- 重复点击时检查并复用健康的中继。
-- 准备失败时回滚本次创建的中继和域名映射。
+Antigravity 的部分服务请求可能无法正确使用系统代理，导致登录、模型请求或 AI 对话连接异常。本项目提供一个独立的 macOS 启动入口，通过 **hosts 域名映射**与 **TLS SNI 中继**，将指定服务域名的 HTTPS 流量交给本地 **SOCKS5 代理**。
 
-## 使用条件
+日常使用时，先打开自己的代理软件，再点击 Dock 中的启动器图标。它会完成代理检查与中继准备，然后打开配置中的 Antigravity 应用。
 
-- Apple Silicon（M 系列）Mac，macOS 12.0 或更新版本。
-- 已安装 Antigravity App，默认路径为 `/Applications/Antigravity.app`。
-- 本地代理软件正在运行，并提供**无认证 SOCKS5** 入口。
-- 具备管理员授权权限，用于写入 hosts 和监听本机 443 端口。
-- 从源码构建时，需要安装 Apple Xcode Command Line Tools。
+**App 和 IDE 都可以使用。** 中继通过系统 hosts 映射处理已配置域名的请求。中继运行后，App 与 IDE 访问这些域名时都可以使用它。
 
-默认代理地址为 `127.0.0.1:1082`。请以你自己的代理软件设置为准。已在本机验证 Shadowrocket 的这个端口可以接受 SOCKS5 请求，其他设备需要自行确认。
+`appPath` 决定启动器点击后打开哪个应用。如果 App 和 IDE 分别安装，可以将它设为常用应用的路径，再手动打开另一个应用，共用已经运行的中继。
 
-## 从源码生成启动器
+[项目仓库](https://github.com/mulunheguang/Antigravity-Proxy-Launcher)
 
-在 Mac 的「终端」执行以下命令，先安装编译工具。已经安装的用户可以跳过。
+---
+
+## 功能特性
+
+- 🚀 **一键启动** — 检查代理、准备中继、打开 Antigravity。
+- 🖥️ **App / IDE 适用** — 为两者访问已覆盖域名的请求提供代理转发。
+- 🔌 **透明转发** — hosts 映射配合 TLS SNI 中继，连接本地 SOCKS5 上游。
+- ⚙️ **菜单栏配置** — 通过屏幕顶部的 **AG** 修改代理端口和应用路径。
+- 🔍 **实际请求检测** — 验证 SOCKS5 建隧道、TLS 证书及 HTTPS 响应。
+- 📋 **日志与清理** — 查看中继日志，停止时清理启动器添加的域名映射。
+- ♻️ **环境复用** — 重复点击时检查并复用健康的中继。
+
+> 关闭 Antigravity App 或 IDE 后，中继继续运行。需要停止代理时，使用 **AG → 停止代理并退出启动器**。
+
+---
+
+## 快速开始
+
+### 1. 环境准备
+
+- **Apple Silicon Mac**，即 M 系列芯片，macOS 12.0 或更新版本。
+- 已安装 Antigravity App 或 Antigravity IDE。
+- 本地代理软件提供**无认证 SOCKS5** 入口。
+- 具备本机管理员授权权限。
+
+从源码构建时，先安装 Apple 命令行工具。已安装的用户可以跳过。
 
 ```bash
 xcode-select --install
 ```
 
-然后下载本项目并构建。
+### 2. 下载并构建
 
 ```bash
 git clone https://github.com/mulunheguang/Antigravity-Proxy-Launcher.git
@@ -40,40 +59,34 @@ cd Antigravity-Proxy-Launcher
 ./scripts/build-launcher.sh
 ```
 
-构建成功后，会在项目的 `dist` 文件夹中生成 **Antigravity Launcher.app**。
+构建完成后，启动器位于以下位置。
 
-构建时会从 `/Applications/Antigravity.app` 读取应用图标。如果 Antigravity 安装在其他位置，将它的完整路径传给构建脚本，例如下面这样。
+```text
+dist/Antigravity Launcher.app
+```
+
+构建脚本默认从 `/Applications/Antigravity.app` 读取图标。如果应用位于其他位置，可传入实际的 `.app` 完整路径，例如下面这样。
 
 ```bash
 ./scripts/build-launcher.sh "$HOME/Applications/Antigravity.app"
 ```
 
-这个参数用于构建时定位图标。实际要打开哪个应用，由下文配置中的 `appPath` 决定。
+这个参数用于构建时定位图标。运行时打开哪个应用，由配置文件中的 `appPath` 决定。
 
-## 安装和日常使用
+### 3. 放入 Dock
 
-1. 将生成的 **Antigravity Launcher.app** 放到一个固定位置，例如你自己的「应用程序」文件夹。
-2. 将这个启动器拖到 **Dock**，也就是屏幕底部或侧边那排应用图标中。
-3. 打开 Shadowrocket 或其他代理软件，确保 SOCKS5 代理可用。
-4. 点击 Dock 中的启动器图标。它会检查代理、准备中继，再打开真正的 Antigravity App。
-5. 出现 macOS 管理员授权框时，输入本机管理员密码并授权。
+1. 将 **Antigravity Launcher.app** 放到固定位置，例如自己的「应用程序」文件夹。
+2. 将启动器拖到 **Dock**，也就是屏幕底部或侧边的应用图标栏。
+3. 打开 Shadowrocket 或其他代理软件。
+4. 点击启动器，按系统提示输入本机管理员密码，等待目标应用打开。
 
-启动器运行后，屏幕顶部菜单栏会出现 **AG**，通常在 Wi-Fi、电池、时间等图标附近。代理操作进行期间会显示 **AG…**。
+已有构建完成的 `.app` 时，可以直接从这一步开始。
 
-**日常入口是这个启动器图标。** 直接点击原始 Antigravity App 的图标，会沿用原始应用的启动方式。
+### 4. 配置代理与应用路径
 
-## 如何修改配置
+启动器运行后，屏幕顶部菜单栏会出现文字 **AG**，通常在 Wi-Fi、电池、时间等图标附近。操作进行期间会显示 **AG…**。
 
-### 通过 AG 菜单修改
-
-1. 点击屏幕顶部的 **AG**。
-2. 选择 **编辑配置…**，在打开的文本编辑器中修改 JSON 配置。
-3. 按 **⌘S** 保存。
-4. 回到 **AG** 菜单，选择 **打开 Antigravity**，让启动器读取并检查新配置。
-
-如果首次启动因为默认端口或应用路径不同而失败，先关闭错误提示，再通过 **AG → 编辑配置…** 修改并重试。
-
-配置示例如下。
+点击 **AG → 编辑配置…**，修改下面的配置，按 **⌘S** 保存，再选择 **AG → 打开 Antigravity** 应用新配置。
 
 ```json
 {
@@ -83,73 +96,81 @@ cd Antigravity-Proxy-Launcher
 }
 ```
 
-各字段的含义如下。
+- **`appPath`** — 要启动的 App 或 IDE 的完整 `.app` 路径。填写到 `.app` 为止。
+- **`proxyHost`** — SOCKS5 代理的 IPv4 地址，本机代理通常使用 `127.0.0.1`。
+- **`proxyPort`** — SOCKS5 代理端口，填写 `1` 到 `65535` 之间的整数。
 
-- **`appPath`** 是要打开的应用的完整 `.app` 路径，例如 `/Applications/Antigravity.app`。路径填写到 `.app` 为止。如果你单独安装了 Antigravity IDE，也可以填写它的实际 `.app` 路径。
-- **`proxyHost`** 是上游 SOCKS5 代理的 IPv4 地址。本机代理通常填写 `127.0.0.1`。
-- **`proxyPort`** 是 SOCKS5 代理端口，填写 `1` 到 `65535` 之间的整数。例如你的 SOCKS5 端口是 `1080`，就将这里的 `1082` 改成 `1080`。
+默认值为 `127.0.0.1:1082`。请按照自己的代理软件设置填写。部分软件提供 HTTP / SOCKS5 混合端口，可以通过 **AG → 检测代理** 确认 SOCKS5 实际转发是否可用。
 
-编辑时保留 JSON 的双引号和逗号，端口填写为数字。保存后更换代理地址或端口，可能需要再次输入管理员密码以重新准备中继。
+> 如果首次启动提示连接失败或应用路径错误，关闭提示后仍可通过 **AG → 编辑配置…** 修改，再点击 **打开 Antigravity** 重试。
 
-### 找不到 AG 时直接打开配置
+---
 
-在访达中按 **⌘⇧G**，粘贴下面的路径并回车。
+## 配置文件位置
+
+首次运行会为当前 Mac 用户创建独立配置，路径如下。
+
+```text
+~/Library/Application Support/Antigravity Proxy Launcher/config.json
+```
+
+找不到 **AG** 时，可以在访达按 **⌘⇧G**，粘贴下面的目录并回车，然后打开里面的 `config.json`。
 
 ```text
 ~/Library/Application Support/Antigravity Proxy Launcher/
 ```
 
-打开里面的 `config.json`，修改并保存，然后重新运行启动器。
+编辑后保存，再次运行启动器即可。JSON 中的路径和地址保留双引号，端口填写为数字。
 
-首次运行会在当前 Mac 用户的上述目录中创建配置。每个人使用自己的配置文件。仓库里的 `launcher/config.json` 是打包时使用的默认模板，已经运行过启动器的用户应修改自己用户目录中的配置。
+仓库中的 `launcher/config.json` 用作打包时的默认模板。已经使用过启动器的用户，应修改自己用户目录中的配置。
 
-## AG 菜单中有哪些功能
+---
 
-- **打开 Antigravity** — 读取当前配置，验证代理，准备或复用中继，然后打开目标应用。
-- **检测代理** — 通过配置的 SOCKS5 代理发送 HTTPS 请求，检查建隧道、TLS 证书验证及服务器响应。
+## 菜单栏操作
+
+- **打开 Antigravity** — 读取配置，检查代理，准备或复用中继，再打开目标 App 或 IDE。
+- **检测代理** — 通过配置的 SOCKS5 上游执行 HTTPS 请求。
 - **编辑配置…** — 打开当前用户的配置文件。
-- **查看中继日志** — 打开中继日志，排查转发错误。
-- **停止代理并退出启动器** — 停止本启动器的中继，清理它添加的 hosts 记录，刷新 DNS 缓存并退出启动器。此操作需要管理员授权。
+- **查看中继日志** — 打开日志，排查连接与转发问题。
+- **停止代理并退出启动器** — 停止本启动器的中继，清理它添加的 hosts 记录，刷新 DNS 缓存并退出。
 
-## 什么时候需要输入管理员密码
-
-首次准备中继时会出现 macOS 管理员授权框。重启电脑后第一次使用，或者中继需要重新启动、代理配置发生变化时，可能再次要求授权。
-
-同一次开机期间，中继持续健康运行时，再次点击启动器通常会复用现有环境。
-
-退出 Antigravity App 后，中继会继续运行。需要结束代理时，使用 **AG → 停止代理并退出启动器**。
-
-## 常见问题
-
-### 首次运行提示代理连接失败
-
-先确认代理软件正在运行，再通过 **AG → 编辑配置…** 检查地址和 SOCKS5 端口，保存后选择 **打开 Antigravity** 重试。
-
-上游需要支持无认证 SOCKS5。如果代理软件提供混合端口，请确认该端口确实支持 SOCKS5。可以使用 **AG → 检测代理** 完成实际请求检测。
-
-### 提示本机 443 端口被占用
-
-SNI 中继需要监听 `127.0.0.1:443`。请先停止旧版 Antigravity 代理中继或其他占用此端口的服务，再重新打开启动器。
-
-### 提示找不到应用或主程序
-
-检查 `appPath` 是否指向实际安装的 `.app`。启动器会读取应用 `Info.plist` 中的主程序名来定位程序。
-
-### 检测代理显示 HTTP 404
-
-检测请求访问 Google API 根路径，可能收到 HTTP 404。只要 SOCKS5 建隧道、TLS 证书验证和 HTTPS 响应都完成，这个状态码就能证明检测请求已得到服务器响应。它仅代表该请求的转发结果。
-
-### 去哪里查看日志
-
-通过 **AG → 查看中继日志** 打开，文件路径如下。
+中继日志位于以下位置。
 
 ```text
 /var/run/antigravity-proxy-launcher/relay.log
 ```
 
-## 当前转发范围
+---
 
-当前 hosts 映射覆盖以下域名，配置来源是 `launcher/proxy-runtime.sh`。
+## 工作原理
+
+点击启动器后的流程如下。
+
+```text
+检查配置与应用路径
+        ↓
+通过 SOCKS5 完成 HTTPS 检测
+        ↓
+启动或复用本机 127.0.0.1:443 中继
+        ↓
+验证中继转发，并准备 hosts 域名映射
+        ↓
+打开配置中的 Antigravity App / IDE
+```
+
+请求的转发路径如下。
+
+```text
+App / IDE 访问已覆盖域名
+        ↓
+hosts 将域名解析到 127.0.0.1
+        ↓
+SNI 中继读取 TLS 连接中的目标域名
+        ↓
+通过本地 SOCKS5 代理连接目标服务器
+```
+
+当前覆盖以下七个域名，列表位于 `launcher/proxy-runtime.sh`。
 
 ```text
 daily-cloudcode-pa.googleapis.com
@@ -161,25 +182,64 @@ generativelanguage.googleapis.com
 content-cloudcode-pa.googleapis.com
 ```
 
-这些域名的 HTTPS 请求会被导向本机 SNI 中继，由中继通过配置的 SOCKS5 上游建立连接。其他域名的网络行为由应用及系统设置决定。
+---
 
-hosts 属于系统级配置，因此启动器启用期间，其他程序访问上述域名也会经过该中继。中继关闭时应使用菜单中的停止操作，让域名映射一并清理。
+## 常见问题
 
-如需扩展域名范围，需要修改运行脚本并重新构建。应用版本升级后，应结合实际使用情况确认登录、对话等功能是否需要新增域名。
+### 为什么开机后第一次使用需要输入密码？
 
-## 项目文件
+写入 hosts 和准备本机 443 中继需要管理员权限。重启电脑后的首次使用、中继重启或代理配置变化时，可能再次要求授权。同一次开机期间，健康的中继通常可以直接复用。
 
-- `launcher/Launcher.swift` — 原生 macOS 启动器与 AG 菜单。
-- `launcher/proxy-runtime.sh` — 中继生命周期、hosts 映射和特权操作。
-- `launcher/config.json` — 首次运行所使用的默认配置模板。
-- `launcher/Info.plist` — 启动器的名称、版本和最低系统要求。
-- `scripts/build-launcher.sh` — 生成独立 `.app` 的构建脚本。
-- `src/relay.c` — TLS SNI 中继实现。
+### App 和 IDE 需要分别运行一个中继吗？
 
-仓库还保留了 VS Code 扩展和动态库相关源码，便于追溯与继续开发。上面的独立启动器流程使用原生应用和 SNI 中继。
+可以共用同一个中继。先通过启动器准备环境，然后打开 App 或 IDE。两者访问上述域名时都会使用已准备好的转发路径。启动器的 `appPath` 用来选择点击图标后自动打开哪一个应用。
+
+### 检测成功，为什么显示 HTTP 404？
+
+检测请求访问 Google API 根路径，服务器可能返回 HTTP 404。SOCKS5 建隧道、TLS 证书验证和服务器响应均完成时，说明这次 HTTPS 请求的转发已完成。App 和 IDE 中的具体功能可以结合实际操作与中继日志确认。
+
+### 提示本机 443 端口被占用怎么办？
+
+先停止旧版代理中继或其他占用本机 443 端口的服务，再通过启动器重试。
+
+### 退出 Antigravity 后，如何关闭代理？
+
+点击 **AG → 停止代理并退出启动器**，按提示授权。此操作会清理本启动器创建的中继和 hosts 记录。
+
+---
+
+## 适用范围与运行说明
+
+- **代理协议** — 上游需要支持无认证 SOCKS5。检测会检查实际 HTTPS 请求。
+- **域名范围** — 当前转发上述七个域名的 HTTPS 流量。其他域名由应用和系统网络设置处理。
+- **系统级映射** — hosts 对整台 Mac 生效，其他程序访问相同域名时也会使用中继。
+- **按需启动** — 通过点击启动器准备环境，当前版本没有配置开机启动任务。
+- **兼容验证** — 已在本机验证 App 启动和中继转发，并收到 IDE 可正常对话的使用反馈。不同版本、模型与功能涉及的域名可能不同，可结合日志确认并按需扩展。
+
+---
+
+## 项目结构
+
+```text
+Antigravity-Proxy-Launcher/
+├── launcher/
+│   ├── Launcher.swift          # 原生启动器与 AG 菜单
+│   ├── Info.plist              # 应用信息与系统版本要求
+│   ├── config.json             # 默认配置模板
+│   └── proxy-runtime.sh        # 中继起停、hosts 与转发校验
+├── scripts/
+│   └── build-launcher.sh       # 构建独立 macOS 应用
+├── src/
+│   └── relay.c                 # TLS SNI 中继
+├── dist/                       # 本机构建输出
+├── vscode-extension/           # 保留的扩展源码
+└── LICENSE
+```
+
+---
 
 ## 致谢与许可证
 
-本项目基于 raybz 的 Antigravity-Proxy 继续开发，增加了独立 macOS 启动器、AG 菜单配置入口及兼容性修复。原作者的版权声明保留在 MIT 许可证中。启动器图标在本机构建时从已安装的 Antigravity 应用复制。
+本项目基于 raybz 的 Antigravity-Proxy 继续开发，增加了独立 macOS 启动器、菜单栏配置及兼容性修复。采用 MIT 许可证，并保留原作者版权声明。启动器图标在构建时从本机已安装的 Antigravity 应用读取。
 
 [原项目](https://github.com/raybz/Antigravity-Proxy) · [MIT 许可证](LICENSE)
