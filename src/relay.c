@@ -276,6 +276,8 @@ int main(int argc, char *argv[]) {
     if (argc > 2) { strncpy(g_socks5_host, argv[2], sizeof(g_socks5_host)-1); }
     if (argc > 3) g_socks5_port = atoi(argv[3]);
 
+    /* Some privileged launch environments inherit SIGTERM as ignored. */
+    signal(SIGTERM, SIG_DFL);
     signal(SIGPIPE, SIG_IGN);
 
     int srv = socket(AF_INET, SOCK_STREAM, 0);

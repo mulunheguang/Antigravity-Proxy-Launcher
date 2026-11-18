@@ -36,10 +36,10 @@ for binary in "$app/Contents/MacOS/AntigravityProxyLauncher" "$app/Contents/Reso
 done
 
 cp "$root/launcher/Info.plist" "$app/Contents/Info.plist"
-cp "$root/launcher/config.json" "$root/launcher/proxy-runtime.sh" "$app/Contents/Resources/"
+cp "$root/launcher/"{config.json,proxy-runtime.sh,autostart.sh} "$app/Contents/Resources/"
 cp "$target_app/Contents/Resources/$app_icon" "$app/Contents/Resources/Antigravity.icns"
 chmod 755 "$app/Contents/MacOS/AntigravityProxyLauncher" \
-  "$app/Contents/Resources/proxy-runtime.sh" "$app/Contents/Resources/antigravity-relay"
+  "$app/Contents/Resources/"{proxy-runtime.sh,autostart.sh,antigravity-relay}
 /usr/bin/plutil -lint "$app/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$app/Contents/Resources/antigravity-relay"
 /usr/bin/codesign --force --sign - "$app"

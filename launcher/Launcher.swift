@@ -66,6 +66,13 @@ func appleScriptQuote(_ value: String) -> String {
 }
 
 final class LauncherService {
+    static let autostartJob = "/Library/LaunchDaemons/local.antigravity.proxy-launcher.relay.plist"
+    static let autostartLog = "/Library/PrivilegedHelperTools/local.antigravity.proxy-launcher.relay/service.log"
+
+    var autostartEnabled: Bool {
+        FileManager.default.fileExists(atPath: Self.autostartJob)
+    }
+
     let resources: URL
     let configURL: URL
 
@@ -91,7 +98,7 @@ final class LauncherService {
 
     func checkProxy(_ config: LauncherConfig) throws -> String {
         let result = try run("/usr/bin/curl", [
-            "--noproxy", "", "--proxy", "socks5h://\(config.proxyHost):\(config.proxyPort)",
+            "--disable", "--noproxy", "", "--proxy", "socks5h://\(config.proxyHost):\(config.proxyPort)",
             "--connect-timeout", "5", "--max-time", "15", "--silent", "--show-error",
             "--output", "/dev/null", "--write-out", "%{http_code}",
             "https://www.googleapis.com/",
@@ -117,25 +124,37 @@ final class LauncherService {
 
     func prepareAndOpen() throws {
         let config = try loadConfig()
-        _ = try checkProxy(config)
-        let status = helperArguments("status", config)
-        do {
-            try run("/bin/bash", status)
-            // Verify the existing listener forwards TLS before reusing it.
-            try run("/usr/bin/curl", [
-                "--noproxy", "*", "--resolve", "www.googleapis.com:443:127.0.0.1",
-                "--connect-timeout", "5", "--max-time", "15", "--silent", "--show-error",
-                "--output", "/dev/null", "https://www.googleapis.com/",
-            ])
-        } catch {
-            try privileged(helperArguments("prepare", config))
+        if autostartEnabled {
+            do {
+                try run("/bin/bash", helperArguments("verify", config))
+            } catch {
+                throw LauncherError.message("代理自启动已启用，但当前配置的中继尚未就绪。请确认小火箭正在运行，并在 AG 中查看自启动日志。若修改过代理地址或端口，请重新选择「启用或更新代理自启动…」。")
+            }
+        } else {
+            _ = try checkProxy(config)
+            do {
+                try run("/bin/bash", helperArguments("verify", config))
+            } catch {
+                try privileged(helperArguments("prepare", config))
+            }
         }
         try run("/usr/bin/open", [config.appPath])
     }
 
-    func stop() throws {
+    func enableAutostart() throws -> String {
         let config = try loadConfig(validateApp: false)
-        try privileged(helperArguments("cleanup", config))
+        let script = resources.appendingPathComponent("autostart.sh").path
+        try privileged([script, "enable", config.proxyHost, String(config.proxyPort)])
+        return "后台服务将自动等待 SOCKS5 和中继就绪。请保持小火箭运行，就绪后直接点击原版 Antigravity 图标。你可以从 AG 菜单查看自启动日志。"
+    }
+
+    func stop() throws {
+        if autostartEnabled {
+            try privileged([resources.appendingPathComponent("autostart.sh").path, "disable"])
+        } else {
+            // Cleanup only needs the ownership marker and the runtime PID file.
+            try privileged([resources.appendingPathComponent("proxy-runtime.sh").path, "cleanup"])
+        }
     }
 }
 
@@ -161,6 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("检测代理", #selector(checkProxy)),
             ("编辑配置…", #selector(editConfig)),
             ("查看中继日志", #selector(openLog)),
+            ("启用或更新代理自启动…", #selector(enableAutostart)),
+            ("查看自启动日志", #selector(openAutostartLog)),
             ("停止代理并退出启动器", #selector(stopProxy)),
         ] {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
@@ -189,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if quitOnSuccess { NSApp.terminate(nil) }
                     if let message = message {
                         let alert = NSAlert()
-                        alert.messageText = "代理检测"
+                        alert.messageText = "Antigravity 代理启动器"
                         alert.informativeText = message
                         NSApp.activate(ignoringOtherApps: true)
                         alert.runModal()
@@ -220,6 +241,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openLog() {
         do { try run("/usr/bin/open", ["-t", "/var/run/antigravity-proxy-launcher/relay.log"]) }
+        catch { showError(error) }
+    }
+
+    @objc func enableAutostart() {
+        perform { try self.service.enableAutostart() }
+    }
+
+    @objc func openAutostartLog() {
+        do { try run("/usr/bin/open", ["-t", LauncherService.autostartLog]) }
         catch { showError(error) }
     }
 
